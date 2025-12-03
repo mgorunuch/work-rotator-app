@@ -148,53 +148,86 @@ body {
   margin-top: 12px;
 }
 
-.add-form {
+/* Inline Add Forms */
+.inline-add-form {
   display: flex;
-  gap: 8px;
-  margin-bottom: 20px;
-}
-
-.add-input {
-  flex: 1;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  align-items: center;
+  gap: 12px;
   padding: 12px 16px;
-  color: var(--text-primary);
-  font-size: 0.9rem;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  cursor: text;
+  transition: background 0.15s;
 }
 
-.add-input::placeholder {
-  color: var(--text-muted);
+.inline-add-form:hover {
+  background: var(--bg-hover);
 }
 
-.add-input:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-glow);
+.inline-add-form:focus-within {
+  background: var(--bg-hover);
 }
 
-.add-btn {
-  width: 48px;
-  height: 48px;
+.inline-add-icon {
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius-md);
-  color: white;
+  background: var(--bg-tertiary);
+  border-radius: 50%;
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  flex-shrink: 0;
   cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
+  transition: background 0.15s, color 0.15s;
 }
 
-.add-btn:hover {
-  background: var(--accent-hover);
+.inline-add-icon:hover {
+  background: var(--accent);
+  color: white;
 }
 
-.add-btn:active {
-  transform: scale(0.95);
+.inline-add-form:focus-within .inline-add-icon {
+  background: var(--accent);
+  color: white;
+}
+
+.inline-add-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.inline-add-input::placeholder {
+  color: var(--text-muted);
+}
+
+.project-inline-add {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 20px;
+}
+
+.task-inline-add {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  margin-bottom: 12px;
+  padding: 8px 12px;
+}
+
+.task-inline-add .inline-add-icon {
+  width: 20px;
+  height: 20px;
+  font-size: 0.9rem;
+}
+
+.task-inline-add .inline-add-input {
+  font-size: 0.85rem;
 }
 
 .items-container {
@@ -364,51 +397,6 @@ body {
   border-top: 1px solid var(--border);
 }
 
-.add-task-form {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.task-input {
-  flex: 1;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 8px 12px;
-  color: var(--text-primary);
-  font-size: 0.85rem;
-}
-
-.task-input::placeholder {
-  color: var(--text-muted);
-}
-
-.task-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-.add-task-btn {
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  font-size: 1.2rem;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-
-.add-task-btn:hover {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: white;
-}
 
 .no-tasks {
   font-size: 0.8rem;

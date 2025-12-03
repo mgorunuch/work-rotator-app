@@ -1,14 +1,16 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import "./App.css";
 
 const DEFAULT_HOTKEY_PROJECT = "CommandOrControl+Shift+P";
 const DEFAULT_HOTKEY_TASK = "CommandOrControl+Shift+O";
+const DEFAULT_HOTKEY_STOP = "CommandOrControl+Shift+I";
 
 interface HotkeySettings {
   projectHotkey: string;
   taskHotkey: string;
+  stopHotkey: string;
 }
 
 interface Task {
@@ -67,10 +69,13 @@ function App() {
   const [adLoading, setAdLoading] = useState(false);
   const [hotkeySettings, setHotkeySettings] = useState<HotkeySettings>(() => {
     const saved = localStorage.getItem("hotkeySettings");
-    return saved ? JSON.parse(saved) : { projectHotkey: DEFAULT_HOTKEY_PROJECT, taskHotkey: DEFAULT_HOTKEY_TASK };
+    const defaults = { projectHotkey: DEFAULT_HOTKEY_PROJECT, taskHotkey: DEFAULT_HOTKEY_TASK, stopHotkey: DEFAULT_HOTKEY_STOP };
+    return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
   });
-  const [recordingHotkey, setRecordingHotkey] = useState<"project" | "task" | null>(null);
+  const [recordingHotkey, setRecordingHotkey] = useState<"project" | "task" | "stop" | null>(null);
   const currentProject = projects[currentProjectIndex] || null;
+  const projectInputRef = useRef<HTMLInputElement>(null);
+  const taskInputRef = useRef<HTMLInputElement>(null);
 
   const loadData = useCallback(async () => {
     const loadedProjects = await invoke<Project[]>("get_projects");
@@ -127,6 +132,14 @@ function App() {
           }
         }
       });
+      await register(hotkeySettings.stopHotkey, async (event) => {
+        if (event.state === "Pressed") {
+          await invoke<number | null>("stop_tracking");
+          setActiveTracking(null);
+          const loadedProjects = await invoke<Project[]>("get_projects");
+          setProjects(loadedProjects);
+        }
+      });
       setHotkeyRegistered(true);
     } catch (e) {
       console.error("Failed to register hotkeys:", e);
@@ -143,6 +156,7 @@ function App() {
     if (currentView === "settings") {
       unregister(hotkeySettings.projectHotkey).catch(console.error);
       unregister(hotkeySettings.taskHotkey).catch(console.error);
+      unregister(hotkeySettings.stopHotkey).catch(console.error);
       setHotkeyRegistered(false);
       return;
     }
@@ -151,6 +165,7 @@ function App() {
     return () => {
       unregister(hotkeySettings.projectHotkey).catch(console.error);
       unregister(hotkeySettings.taskHotkey).catch(console.error);
+      unregister(hotkeySettings.stopHotkey).catch(console.error);
     };
   }, [registerHotkeys, hotkeySettings, currentView]);
 
@@ -316,7 +331,14 @@ function App() {
       .replace(/\+/g, " + ");
   };
 
-  const handleHotkeyRecord = (e: React.KeyboardEvent, type: "project" | "task") => {
+  const formatHotkeyShort = (hotkey: string): string => {
+    return hotkey
+      .replace("CommandOrControl+", "⌘")
+      .replace("Shift+", "⇧")
+      .replace("Alt+", "⌥");
+  };
+
+  const handleHotkeyRecord = (e: React.KeyboardEvent, type: "project" | "task" | "stop") => {
     e.preventDefault();
     e.stopPropagation();
 
@@ -347,9 +369,10 @@ function App() {
     if (parts.length < 2) return;
 
     const newHotkey = parts.join("+");
+    const keyMap = { project: "projectHotkey", task: "taskHotkey", stop: "stopHotkey" } as const;
     const newSettings = {
       ...hotkeySettings,
-      [type === "project" ? "projectHotkey" : "taskHotkey"]: newHotkey,
+      [keyMap[type]]: newHotkey,
     };
     setHotkeySettings(newSettings);
     localStorage.setItem("hotkeySettings", JSON.stringify(newSettings));
@@ -357,7 +380,7 @@ function App() {
   };
 
   const resetHotkeys = () => {
-    const defaultSettings = { projectHotkey: DEFAULT_HOTKEY_PROJECT, taskHotkey: DEFAULT_HOTKEY_TASK };
+    const defaultSettings = { projectHotkey: DEFAULT_HOTKEY_PROJECT, taskHotkey: DEFAULT_HOTKEY_TASK, stopHotkey: DEFAULT_HOTKEY_STOP };
     setHotkeySettings(defaultSettings);
     localStorage.setItem("hotkeySettings", JSON.stringify(defaultSettings));
   };
@@ -376,21 +399,30 @@ function App() {
             </div>
           )}
 
-          <form onSubmit={addProject} className="add-form">
+          <div className="inline-add-form project-inline-add">
+            <span className="inline-add-icon" onClick={() => projectInputRef.current?.focus()}>+</span>
             <input
+              ref={projectInputRef}
               type="text"
               value={newProjectName}
               onChange={(e) => setNewProjectName(e.target.value)}
-              placeholder="Add new project..."
-              className="add-input"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (newProjectName.trim()) {
+                    addProject(e as unknown as React.FormEvent);
+                  }
+                }
+              }}
+              onBlur={() => {
+                if (newProjectName.trim()) {
+                  addProject({ preventDefault: () => {} } as React.FormEvent);
+                }
+              }}
+              placeholder="Add project..."
+              className="inline-add-input"
             />
-            <button type="submit" className="add-btn">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-              </svg>
-            </button>
-          </form>
+          </div>
 
           <div className="items-container">
         {projects.length === 0 ? (
@@ -450,27 +482,27 @@ function App() {
 
                 {expandedProjectId === project.id && (
                   <div className="tasks-section">
-                    <div className="add-task-form">
+                    <div className="inline-add-form task-inline-add">
+                      <span className="inline-add-icon" onClick={() => taskInputRef.current?.focus()}>+</span>
                       <input
+                        ref={taskInputRef}
                         type="text"
                         value={newTaskName}
                         onChange={(e) => setNewTaskName(e.target.value)}
                         placeholder="Add task..."
-                        className="task-input"
+                        className="inline-add-input"
                         onKeyDown={(e) => {
                           if (e.key === "Enter") {
                             e.preventDefault();
                             addTask(project.id);
                           }
                         }}
+                        onBlur={() => {
+                          if (newTaskName.trim()) {
+                            addTask(project.id);
+                          }
+                        }}
                       />
-                      <button
-                        type="button"
-                        className="add-task-btn"
-                        onClick={() => addTask(project.id)}
-                      >
-                        +
-                      </button>
                     </div>
 
                     {project.tasks.length === 0 ? (
@@ -520,7 +552,7 @@ function App() {
       </div>
 
           <footer className="footer">
-            <span>⌘⇧P rotate project • ⌘⇧O rotate task</span>
+            <span>{formatHotkeyShort(hotkeySettings.projectHotkey)} project • {formatHotkeyShort(hotkeySettings.taskHotkey)} task • {formatHotkeyShort(hotkeySettings.stopHotkey)} stop</span>
           </footer>
         </>
       ) : currentView === "donate" ? (
@@ -622,6 +654,21 @@ function App() {
                   onFocus={() => setRecordingHotkey("task")}
                   onBlur={() => setRecordingHotkey(null)}
                   onKeyDown={(e) => handleHotkeyRecord(e, "task")}
+                />
+              </div>
+              <div className="hotkey-item">
+                <div className="hotkey-info">
+                  <span className="hotkey-label">Stop Timer</span>
+                  <span className="hotkey-description">Stop the current timer</span>
+                </div>
+                <input
+                  type="text"
+                  readOnly
+                  className={`hotkey-recorder ${recordingHotkey === "stop" ? "recording" : ""}`}
+                  value={recordingHotkey === "stop" ? "Press keys..." : formatHotkeyForDisplay(hotkeySettings.stopHotkey)}
+                  onFocus={() => setRecordingHotkey("stop")}
+                  onBlur={() => setRecordingHotkey(null)}
+                  onKeyDown={(e) => handleHotkeyRecord(e, "stop")}
                 />
               </div>
             </div>
