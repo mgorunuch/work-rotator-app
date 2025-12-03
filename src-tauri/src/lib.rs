@@ -1,4 +1,6 @@
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
@@ -30,11 +32,138 @@ struct ActiveTracking {
 }
 
 struct AppState {
+    db: Mutex<Connection>,
     projects: Mutex<Vec<Project>>,
     current_project_index: Mutex<usize>,
     next_project_id: Mutex<u64>,
     next_task_id: Mutex<u64>,
     active_tracking: Mutex<Option<ActiveTracking>>,
+}
+
+fn get_db_path() -> PathBuf {
+    let mut path = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+    path.push("rotator");
+    std::fs::create_dir_all(&path).ok();
+    path.push("rotator.db");
+    path
+}
+
+fn init_db(conn: &Connection) {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            current_task_index INTEGER NOT NULL DEFAULT 0
+        )",
+        [],
+    ).expect("Failed to create projects table");
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            time_seconds INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        )",
+        [],
+    ).expect("Failed to create tasks table");
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+        [],
+    ).expect("Failed to create app_state table");
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS active_tracking (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            project_id INTEGER NOT NULL,
+            task_id INTEGER NOT NULL,
+            started_at INTEGER NOT NULL
+        )",
+        [],
+    ).expect("Failed to create active_tracking table");
+}
+
+fn load_projects(conn: &Connection) -> Vec<Project> {
+    let mut stmt = conn.prepare("SELECT id, name, current_task_index FROM projects ORDER BY id").unwrap();
+    let project_iter = stmt.query_map([], |row| {
+        Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?, row.get::<_, usize>(2)?))
+    }).unwrap();
+
+    let mut projects = Vec::new();
+    for project_result in project_iter {
+        let (id, name, current_task_index) = project_result.unwrap();
+        let tasks = load_tasks(conn, id);
+        projects.push(Project { id, name, tasks, current_task_index });
+    }
+    projects
+}
+
+fn load_tasks(conn: &Connection, project_id: u64) -> Vec<Task> {
+    let mut stmt = conn.prepare("SELECT id, name, time_seconds FROM tasks WHERE project_id = ? ORDER BY id").unwrap();
+    let task_iter = stmt.query_map([project_id], |row| {
+        Ok(Task {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            time_seconds: row.get(2)?,
+        })
+    }).unwrap();
+
+    task_iter.filter_map(|t| t.ok()).collect()
+}
+
+fn load_current_project_index(conn: &Connection) -> usize {
+    conn.query_row(
+        "SELECT value FROM app_state WHERE key = 'current_project_index'",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|v| v.parse().ok())
+    .unwrap_or(0)
+}
+
+fn save_current_project_index(conn: &Connection, index: usize) {
+    conn.execute(
+        "INSERT OR REPLACE INTO app_state (key, value) VALUES ('current_project_index', ?)",
+        [index.to_string()],
+    ).ok();
+}
+
+fn get_next_id(conn: &Connection, table: &str) -> u64 {
+    conn.query_row(
+        &format!("SELECT COALESCE(MAX(id), 0) + 1 FROM {}", table),
+        [],
+        |row| row.get(0),
+    ).unwrap_or(1)
+}
+
+fn load_active_tracking(conn: &Connection) -> Option<ActiveTracking> {
+    conn.query_row(
+        "SELECT project_id, task_id, started_at FROM active_tracking WHERE id = 1",
+        [],
+        |row| {
+            Ok(ActiveTracking {
+                project_id: row.get(0)?,
+                task_id: row.get(1)?,
+                started_at: row.get(2)?,
+            })
+        },
+    ).ok()
+}
+
+fn save_active_tracking(conn: &Connection, tracking: Option<&ActiveTracking>) {
+    conn.execute("DELETE FROM active_tracking WHERE id = 1", []).ok();
+    if let Some(t) = tracking {
+        conn.execute(
+            "INSERT INTO active_tracking (id, project_id, task_id, started_at) VALUES (1, ?, ?, ?)",
+            params![t.project_id, t.task_id, t.started_at],
+        ).ok();
+    }
 }
 
 fn now_seconds() -> u64 {
@@ -58,13 +187,21 @@ fn get_current_project_index(state: State<AppState>) -> usize {
 fn add_project(name: String, state: State<AppState>) -> Vec<Project> {
     let mut projects = state.projects.lock().unwrap();
     let mut next_id = state.next_project_id.lock().unwrap();
+    let db = state.db.lock().unwrap();
 
-    projects.push(Project {
+    let project = Project {
         id: *next_id,
-        name,
+        name: name.clone(),
         tasks: Vec::new(),
         current_task_index: 0,
-    });
+    };
+
+    db.execute(
+        "INSERT INTO projects (id, name, current_task_index) VALUES (?, ?, 0)",
+        params![*next_id, name],
+    ).ok();
+
+    projects.push(project);
     *next_id += 1;
 
     projects.clone()
@@ -75,18 +212,24 @@ fn remove_project(project_id: u64, state: State<AppState>) -> Vec<Project> {
     let mut projects = state.projects.lock().unwrap();
     let mut current = state.current_project_index.lock().unwrap();
     let mut tracking = state.active_tracking.lock().unwrap();
+    let db = state.db.lock().unwrap();
 
     if let Some(pos) = projects.iter().position(|p| p.id == project_id) {
         if let Some(ref t) = *tracking {
             if t.project_id == project_id {
                 *tracking = None;
+                save_active_tracking(&db, None);
             }
         }
+
+        db.execute("DELETE FROM tasks WHERE project_id = ?", [project_id]).ok();
+        db.execute("DELETE FROM projects WHERE id = ?", [project_id]).ok();
 
         projects.remove(pos);
         if *current >= projects.len() && !projects.is_empty() {
             *current = 0;
         }
+        save_current_project_index(&db, *current);
     }
 
     projects.clone()
@@ -96,12 +239,14 @@ fn remove_project(project_id: u64, state: State<AppState>) -> Vec<Project> {
 fn rotate_project(state: State<AppState>) -> (usize, Option<Project>) {
     let projects = state.projects.lock().unwrap();
     let mut current = state.current_project_index.lock().unwrap();
+    let db = state.db.lock().unwrap();
 
     if projects.is_empty() {
         return (0, None);
     }
 
     *current = (*current + 1) % projects.len();
+    save_current_project_index(&db, *current);
     (*current, Some(projects[*current].clone()))
 }
 
@@ -109,9 +254,11 @@ fn rotate_project(state: State<AppState>) -> (usize, Option<Project>) {
 fn set_current_project(index: usize, state: State<AppState>) -> usize {
     let projects = state.projects.lock().unwrap();
     let mut current = state.current_project_index.lock().unwrap();
+    let db = state.db.lock().unwrap();
 
     if index < projects.len() {
         *current = index;
+        save_current_project_index(&db, *current);
     }
 
     *current
@@ -121,6 +268,7 @@ fn set_current_project(index: usize, state: State<AppState>) -> usize {
 fn rotate_task(state: State<AppState>) -> Option<Task> {
     let mut projects = state.projects.lock().unwrap();
     let current_idx = state.current_project_index.lock().unwrap();
+    let db = state.db.lock().unwrap();
 
     if projects.is_empty() {
         return None;
@@ -132,6 +280,12 @@ fn rotate_task(state: State<AppState>) -> Option<Task> {
     }
 
     project.current_task_index = (project.current_task_index + 1) % project.tasks.len();
+
+    db.execute(
+        "UPDATE projects SET current_task_index = ? WHERE id = ?",
+        params![project.current_task_index, project.id],
+    ).ok();
+
     Some(project.tasks[project.current_task_index].clone())
 }
 
@@ -139,13 +293,21 @@ fn rotate_task(state: State<AppState>) -> Option<Task> {
 fn add_task(project_id: u64, name: String, state: State<AppState>) -> Option<Project> {
     let mut projects = state.projects.lock().unwrap();
     let mut next_task_id = state.next_task_id.lock().unwrap();
+    let db = state.db.lock().unwrap();
 
     if let Some(project) = projects.iter_mut().find(|p| p.id == project_id) {
-        project.tasks.push(Task {
+        let task = Task {
             id: *next_task_id,
-            name,
+            name: name.clone(),
             time_seconds: 0,
-        });
+        };
+
+        db.execute(
+            "INSERT INTO tasks (id, project_id, name, time_seconds) VALUES (?, ?, ?, 0)",
+            params![*next_task_id, project_id, name],
+        ).ok();
+
+        project.tasks.push(task);
         *next_task_id += 1;
         return Some(project.clone());
     }
@@ -157,19 +319,28 @@ fn add_task(project_id: u64, name: String, state: State<AppState>) -> Option<Pro
 fn remove_task(project_id: u64, task_id: u64, state: State<AppState>) -> Option<Project> {
     let mut projects = state.projects.lock().unwrap();
     let mut tracking = state.active_tracking.lock().unwrap();
+    let db = state.db.lock().unwrap();
 
     if let Some(project) = projects.iter_mut().find(|p| p.id == project_id) {
         if let Some(ref t) = *tracking {
             if t.project_id == project_id && t.task_id == task_id {
                 *tracking = None;
+                save_active_tracking(&db, None);
             }
         }
 
         if let Some(pos) = project.tasks.iter().position(|t| t.id == task_id) {
+            db.execute("DELETE FROM tasks WHERE id = ?", [task_id]).ok();
+
             project.tasks.remove(pos);
             if project.current_task_index >= project.tasks.len() && !project.tasks.is_empty() {
                 project.current_task_index = 0;
             }
+
+            db.execute(
+                "UPDATE projects SET current_task_index = ? WHERE id = ?",
+                params![project.current_task_index, project_id],
+            ).ok();
         }
         return Some(project.clone());
     }
@@ -181,10 +352,12 @@ fn remove_task(project_id: u64, task_id: u64, state: State<AppState>) -> Option<
 fn start_tracking(project_id: u64, task_id: u64, state: State<AppState>) -> Option<ActiveTracking> {
     let projects = state.projects.lock().unwrap();
     let mut tracking = state.active_tracking.lock().unwrap();
+    let db = state.db.lock().unwrap();
 
     if tracking.is_some() {
         drop(tracking);
         drop(projects);
+        drop(db);
         stop_tracking_internal(&state);
         return start_tracking_internal(project_id, task_id, &state);
     }
@@ -195,6 +368,7 @@ fn start_tracking(project_id: u64, task_id: u64, state: State<AppState>) -> Opti
             task_id,
             started_at: now_seconds(),
         };
+        save_active_tracking(&db, Some(&new_tracking));
         *tracking = Some(new_tracking.clone());
         return Some(new_tracking);
     }
@@ -205,6 +379,7 @@ fn start_tracking(project_id: u64, task_id: u64, state: State<AppState>) -> Opti
 fn start_tracking_internal(project_id: u64, task_id: u64, state: &State<AppState>) -> Option<ActiveTracking> {
     let projects = state.projects.lock().unwrap();
     let mut tracking = state.active_tracking.lock().unwrap();
+    let db = state.db.lock().unwrap();
 
     if projects.iter().any(|p| p.id == project_id && p.tasks.iter().any(|t| t.id == task_id)) {
         let new_tracking = ActiveTracking {
@@ -212,6 +387,7 @@ fn start_tracking_internal(project_id: u64, task_id: u64, state: &State<AppState
             task_id,
             started_at: now_seconds(),
         };
+        save_active_tracking(&db, Some(&new_tracking));
         *tracking = Some(new_tracking.clone());
         return Some(new_tracking);
     }
@@ -222,6 +398,7 @@ fn start_tracking_internal(project_id: u64, task_id: u64, state: &State<AppState
 fn stop_tracking_internal(state: &State<AppState>) -> Option<u64> {
     let mut projects = state.projects.lock().unwrap();
     let mut tracking = state.active_tracking.lock().unwrap();
+    let db = state.db.lock().unwrap();
 
     if let Some(ref t) = *tracking {
         let elapsed = now_seconds() - t.started_at;
@@ -229,9 +406,14 @@ fn stop_tracking_internal(state: &State<AppState>) -> Option<u64> {
         if let Some(project) = projects.iter_mut().find(|p| p.id == t.project_id) {
             if let Some(task) = project.tasks.iter_mut().find(|tk| tk.id == t.task_id) {
                 task.time_seconds += elapsed;
+                db.execute(
+                    "UPDATE tasks SET time_seconds = ? WHERE id = ?",
+                    params![task.time_seconds, task.id],
+                ).ok();
             }
         }
 
+        save_active_tracking(&db, None);
         *tracking = None;
         return Some(elapsed);
     }
@@ -243,6 +425,7 @@ fn stop_tracking_internal(state: &State<AppState>) -> Option<u64> {
 fn stop_tracking(state: State<AppState>) -> Option<u64> {
     let mut projects = state.projects.lock().unwrap();
     let mut tracking = state.active_tracking.lock().unwrap();
+    let db = state.db.lock().unwrap();
 
     if let Some(ref t) = *tracking {
         let elapsed = now_seconds() - t.started_at;
@@ -250,9 +433,14 @@ fn stop_tracking(state: State<AppState>) -> Option<u64> {
         if let Some(project) = projects.iter_mut().find(|p| p.id == t.project_id) {
             if let Some(task) = project.tasks.iter_mut().find(|tk| tk.id == t.task_id) {
                 task.time_seconds += elapsed;
+                db.execute(
+                    "UPDATE tasks SET time_seconds = ? WHERE id = ?",
+                    params![task.time_seconds, task.id],
+                ).ok();
             }
         }
 
+        save_active_tracking(&db, None);
         *tracking = None;
         return Some(elapsed);
     }
@@ -290,18 +478,28 @@ fn update_tray_title(app: AppHandle, title: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let db_path = get_db_path();
+    let conn = Connection::open(&db_path).expect("Failed to open database");
+    init_db(&conn);
+
+    let projects = load_projects(&conn);
+    let current_project_index = load_current_project_index(&conn);
+    let next_project_id = get_next_id(&conn, "projects");
+    let next_task_id = get_next_id(&conn, "tasks");
+    let active_tracking = load_active_tracking(&conn);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState {
-            projects: Mutex::new(Vec::new()),
-            current_project_index: Mutex::new(0),
-            next_project_id: Mutex::new(1),
-            next_task_id: Mutex::new(1),
-            active_tracking: Mutex::new(None),
+            db: Mutex::new(conn),
+            projects: Mutex::new(projects),
+            current_project_index: Mutex::new(current_project_index),
+            next_project_id: Mutex::new(next_project_id),
+            next_task_id: Mutex::new(next_task_id),
+            active_tracking: Mutex::new(active_tracking),
         })
         .setup(|app| {
-            // Include icon at compile time
             let icon_bytes = include_bytes!("../icons/32x32.png");
             let icon = Image::from_bytes(icon_bytes).expect("Failed to load tray icon");
 

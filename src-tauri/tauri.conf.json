@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Item Rotator",
+        "title": "Rotator",
         "width": 400,
         "height": 500
       }
