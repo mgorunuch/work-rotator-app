@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::State;
+use tauri::{
+    image::Image,
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    AppHandle, Manager, State,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Task {
@@ -255,6 +260,17 @@ fn get_current_project(state: State<AppState>) -> Option<Project> {
     }
 }
 
+#[tauri::command]
+fn update_tray_title(app: AppHandle, title: String) -> Result<(), String> {
+    match app.tray_by_id("main-tray") {
+        Some(tray) => {
+            tray.set_title(Some(&title)).map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        None => Err("Tray not found".to_string()),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -266,6 +282,38 @@ pub fn run() {
             next_project_id: Mutex::new(1),
             next_task_id: Mutex::new(1),
             active_tracking: Mutex::new(None),
+        })
+        .setup(|app| {
+            // Include icon at compile time
+            let icon_bytes = include_bytes!("../icons/32x32.png");
+            let icon = Image::from_bytes(icon_bytes).expect("Failed to load tray icon");
+
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+            let _tray = TrayIconBuilder::with_id("main-tray")
+                .icon(icon)
+                .icon_as_template(true)
+                .title("Rotator")
+                .show_menu_on_left_click(false)
+                .tooltip("Project Rotator")
+                .menu(&menu)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    _ => {}
+                })
+                .build(app)?;
+
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_projects,
@@ -279,7 +327,8 @@ pub fn run() {
             start_tracking,
             stop_tracking,
             get_active_tracking,
-            get_current_project
+            get_current_project,
+            update_tray_title
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

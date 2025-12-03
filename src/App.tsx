@@ -33,7 +33,21 @@ const formatTime = (seconds: number): string => {
   return `${s}s`;
 };
 
-type View = "main" | "donate";
+type View = "main" | "donate" | "settings";
+
+interface HeaderIndicatorSettings {
+  showProjectIndex: boolean;
+  showTrackingStatus: boolean;
+  showTotalTime: boolean;
+  showProjectName: boolean;
+}
+
+const defaultIndicatorSettings: HeaderIndicatorSettings = {
+  showProjectIndex: true,
+  showTrackingStatus: true,
+  showTotalTime: false,
+  showProjectName: false,
+};
 
 interface AdData {
   url: string;
@@ -59,6 +73,10 @@ function App() {
   });
   const [adData, setAdData] = useState<AdData | null>(null);
   const [adLoading, setAdLoading] = useState(false);
+  const [indicatorSettings, setIndicatorSettings] = useState<HeaderIndicatorSettings>(() => {
+    const saved = localStorage.getItem("indicatorSettings");
+    return saved ? { ...defaultIndicatorSettings, ...JSON.parse(saved) } : defaultIndicatorSettings;
+  });
 
   const currentProject = projects[currentProjectIndex] || null;
 
@@ -114,6 +132,33 @@ function App() {
 
     return () => clearInterval(interval);
   }, [activeTracking]);
+
+  // Update system tray title
+  useEffect(() => {
+    const updateTray = async () => {
+      let title = "";
+      const truncateName = (name: string, maxLen = 12) =>
+        name.length > maxLen ? name.slice(0, maxLen) + "…" : name;
+
+      if (activeTracking && currentProject) {
+        const task = currentProject.tasks.find(t => t.id === activeTracking.task_id);
+        const taskTime = task ? task.time_seconds + elapsedTime : elapsedTime;
+        title = `● ${truncateName(currentProject.name)} ${formatTime(taskTime)}`;
+      } else if (currentProject) {
+        title = `${truncateName(currentProject.name)} (${currentProjectIndex + 1}/${projects.length})`;
+      } else {
+        title = "Rotator";
+      }
+
+      try {
+        await invoke("update_tray_title", { title });
+      } catch (e) {
+        console.error("Failed to update tray:", e);
+      }
+    };
+
+    updateTray();
+  }, [activeTracking, elapsedTime, currentProject, currentProjectIndex, projects.length]);
 
   useEffect(() => {
     if (!adsEnabled) {
@@ -228,13 +273,54 @@ function App() {
     localStorage.setItem("adsEnabled", JSON.stringify(newValue));
   };
 
+  const toggleIndicator = (key: keyof HeaderIndicatorSettings) => {
+    const newSettings = { ...indicatorSettings, [key]: !indicatorSettings[key] };
+    setIndicatorSettings(newSettings);
+    localStorage.setItem("indicatorSettings", JSON.stringify(newSettings));
+  };
+
+  const getTotalTimeToday = (): number => {
+    const totalBase = projects.reduce((sum, project) =>
+      sum + project.tasks.reduce((taskSum, task) => taskSum + task.time_seconds, 0), 0);
+    return activeTracking ? totalBase + elapsedTime : totalBase;
+  };
+
   return (
     <div className="app">
       <header className="header">
-        <h1>{currentView === "main" ? "Project Rotator" : "Support Us"}</h1>
+        <h1>{currentView === "main" ? "Project Rotator" : currentView === "donate" ? "Support Us" : "Settings"}</h1>
         <div className="header-actions">
           {currentView === "main" ? (
             <>
+              <div className="header-indicators">
+                {indicatorSettings.showTrackingStatus && (
+                  <div className={`header-indicator tracking-indicator ${activeTracking ? "active" : ""}`}>
+                    <span className="indicator-dot"></span>
+                    <span>{activeTracking ? "Tracking" : "Idle"}</span>
+                  </div>
+                )}
+                {indicatorSettings.showProjectIndex && projects.length > 0 && (
+                  <div className="header-indicator">
+                    <span>{currentProjectIndex + 1}/{projects.length}</span>
+                  </div>
+                )}
+                {indicatorSettings.showTotalTime && (
+                  <div className="header-indicator">
+                    <span>{formatTime(getTotalTimeToday())}</span>
+                  </div>
+                )}
+                {indicatorSettings.showProjectName && currentProject && (
+                  <div className="header-indicator project-name-indicator">
+                    <span>{currentProject.name}</span>
+                  </div>
+                )}
+              </div>
+              <button className="nav-btn settings-btn" onClick={() => setCurrentView("settings")}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="3"></circle>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                </svg>
+              </button>
               <button className="nav-btn donate-btn" onClick={() => setCurrentView("donate")}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
@@ -415,7 +501,7 @@ function App() {
             <span>Click project or press {HOTKEY.replace("CommandOrControl", "⌘")} to rotate</span>
           </footer>
         </>
-      ) : (
+      ) : currentView === "donate" ? (
         <div className="donate-view">
           <div className="donate-section">
             <h2>Enable Ads</h2>
@@ -475,6 +561,60 @@ function App() {
                 title="Donate"
                 className="donate-iframe"
               />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="settings-view">
+          <div className="settings-section">
+            <h2>Header Indicators</h2>
+            <p className="settings-description">
+              Choose which indicators to display in the header bar.
+            </p>
+            <div className="settings-options">
+              <button
+                className={`settings-toggle ${indicatorSettings.showTrackingStatus ? "enabled" : ""}`}
+                onClick={() => toggleIndicator("showTrackingStatus")}
+              >
+                <span className="toggle-track">
+                  <span className="toggle-thumb"></span>
+                </span>
+                <span className="toggle-label">Tracking Status</span>
+                <span className="toggle-description">Show active/idle tracking indicator</span>
+              </button>
+
+              <button
+                className={`settings-toggle ${indicatorSettings.showProjectIndex ? "enabled" : ""}`}
+                onClick={() => toggleIndicator("showProjectIndex")}
+              >
+                <span className="toggle-track">
+                  <span className="toggle-thumb"></span>
+                </span>
+                <span className="toggle-label">Project Index</span>
+                <span className="toggle-description">Show current project position (1/5)</span>
+              </button>
+
+              <button
+                className={`settings-toggle ${indicatorSettings.showTotalTime ? "enabled" : ""}`}
+                onClick={() => toggleIndicator("showTotalTime")}
+              >
+                <span className="toggle-track">
+                  <span className="toggle-thumb"></span>
+                </span>
+                <span className="toggle-label">Total Time</span>
+                <span className="toggle-description">Show total tracked time across all projects</span>
+              </button>
+
+              <button
+                className={`settings-toggle ${indicatorSettings.showProjectName ? "enabled" : ""}`}
+                onClick={() => toggleIndicator("showProjectName")}
+              >
+                <span className="toggle-track">
+                  <span className="toggle-thumb"></span>
+                </span>
+                <span className="toggle-label">Project Name</span>
+                <span className="toggle-description">Show current project name in header</span>
+              </button>
             </div>
           </div>
         </div>
