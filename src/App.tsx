@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import "./App.css";
 
-const HOTKEY = "CommandOrControl+Shift+P";
+const HOTKEY_PROJECT = "CommandOrControl+Shift+P";
+const HOTKEY_TASK = "CommandOrControl+Shift+O";
 
 interface Task {
   id: number;
@@ -92,32 +93,64 @@ function App() {
     }
   }, [expandedProjectId]);
 
-  const registerHotkey = useCallback(async () => {
+  const registerHotkeys = useCallback(async () => {
     try {
-      await register(HOTKEY, async (event) => {
+      await register(HOTKEY_PROJECT, async (event) => {
         if (event.state === "Pressed") {
           const [index] = await invoke<[number, Project | null]>("rotate_project");
           setCurrentProjectIndex(index);
           const loadedProjects = await invoke<Project[]>("get_projects");
-          if (loadedProjects[index]) {
-            setExpandedProjectId(loadedProjects[index].id);
+          const project = loadedProjects[index];
+          if (project) {
+            setExpandedProjectId(project.id);
+            setProjects(loadedProjects);
+            // Auto-start tracking current task
+            const task = project.tasks[project.current_task_index];
+            if (task) {
+              const tracking = await invoke<ActiveTracking | null>("start_tracking", {
+                projectId: project.id,
+                taskId: task.id,
+              });
+              setActiveTracking(tracking);
+              if (tracking) setElapsedTime(0);
+            }
+          }
+        }
+      });
+      await register(HOTKEY_TASK, async (event) => {
+        if (event.state === "Pressed") {
+          const task = await invoke<Task | null>("rotate_task");
+          if (task) {
+            const loadedProjects = await invoke<Project[]>("get_projects");
+            setProjects(loadedProjects);
+            const currentIdx = await invoke<number>("get_current_project_index");
+            const project = loadedProjects[currentIdx];
+            if (project) {
+              const tracking = await invoke<ActiveTracking | null>("start_tracking", {
+                projectId: project.id,
+                taskId: task.id,
+              });
+              setActiveTracking(tracking);
+              if (tracking) setElapsedTime(0);
+            }
           }
         }
       });
       setHotkeyRegistered(true);
     } catch (e) {
-      console.error("Failed to register hotkey:", e);
+      console.error("Failed to register hotkeys:", e);
       setHotkeyRegistered(false);
     }
   }, []);
 
   useEffect(() => {
     loadData();
-    registerHotkey();
+    registerHotkeys();
     return () => {
-      unregister(HOTKEY).catch(console.error);
+      unregister(HOTKEY_PROJECT).catch(console.error);
+      unregister(HOTKEY_TASK).catch(console.error);
     };
-  }, [loadData, registerHotkey]);
+  }, [loadData, registerHotkeys]);
 
   useEffect(() => {
     if (!activeTracking) {
@@ -137,13 +170,13 @@ function App() {
   useEffect(() => {
     const updateTray = async () => {
       let title = "";
-      const truncateName = (name: string, maxLen = 12) =>
+      const truncateName = (name: string, maxLen = 10) =>
         name.length > maxLen ? name.slice(0, maxLen) + "…" : name;
 
       if (activeTracking && currentProject) {
         const task = currentProject.tasks.find(t => t.id === activeTracking.task_id);
-        const taskTime = task ? task.time_seconds + elapsedTime : elapsedTime;
-        title = `● ${truncateName(currentProject.name)} ${formatTime(taskTime)}`;
+        const taskName = task ? task.name : "";
+        title = `[${truncateName(currentProject.name, 6)}] ${truncateName(taskName, 8)} │ ${formatTime(elapsedTime)}`;
       } else if (currentProject) {
         title = `${truncateName(currentProject.name)} (${currentProjectIndex + 1}/${projects.length})`;
       } else {
@@ -299,6 +332,11 @@ function App() {
                     <span>{activeTracking ? "Tracking" : "Idle"}</span>
                   </div>
                 )}
+                {activeTracking && (
+                  <div className="header-indicator session-timer">
+                    <span>{formatTime(elapsedTime)}</span>
+                  </div>
+                )}
                 {indicatorSettings.showProjectIndex && projects.length > 0 && (
                   <div className="header-indicator">
                     <span>{currentProjectIndex + 1}/{projects.length}</span>
@@ -327,7 +365,7 @@ function App() {
                 </svg>
               </button>
               <div className={`hotkey-badge ${hotkeyRegistered ? "active" : "inactive"}`}>
-                <kbd>{HOTKEY.replace("CommandOrControl", "⌘")}</kbd>
+                <kbd>⌘⇧P/O</kbd>
                 <span>{hotkeyRegistered ? "Active" : "Inactive"}</span>
               </div>
             </>
@@ -498,7 +536,7 @@ function App() {
       </div>
 
           <footer className="footer">
-            <span>Click project or press {HOTKEY.replace("CommandOrControl", "⌘")} to rotate</span>
+            <span>⌘⇧P rotate project • ⌘⇧O rotate task</span>
           </footer>
         </>
       ) : currentView === "donate" ? (

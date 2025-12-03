@@ -3,7 +3,6 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     image::Image,
-    menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     AppHandle, Manager, State,
 };
@@ -116,6 +115,24 @@ fn set_current_project(index: usize, state: State<AppState>) -> usize {
     }
 
     *current
+}
+
+#[tauri::command]
+fn rotate_task(state: State<AppState>) -> Option<Task> {
+    let mut projects = state.projects.lock().unwrap();
+    let current_idx = state.current_project_index.lock().unwrap();
+
+    if projects.is_empty() {
+        return None;
+    }
+
+    let project = &mut projects[*current_idx];
+    if project.tasks.is_empty() {
+        return None;
+    }
+
+    project.current_task_index = (project.current_task_index + 1) % project.tasks.len();
+    Some(project.tasks[project.current_task_index].clone())
 }
 
 #[tauri::command]
@@ -288,28 +305,18 @@ pub fn run() {
             let icon_bytes = include_bytes!("../icons/32x32.png");
             let icon = Image::from_bytes(icon_bytes).expect("Failed to load tray icon");
 
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
-
             let _tray = TrayIconBuilder::with_id("main-tray")
                 .icon(icon)
                 .icon_as_template(true)
                 .title("Rotator")
-                .show_menu_on_left_click(false)
                 .tooltip("Project Rotator")
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => {
-                        app.exit(0);
-                    }
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
                     }
-                    _ => {}
                 })
                 .build(app)?;
 
@@ -322,6 +329,7 @@ pub fn run() {
             remove_project,
             rotate_project,
             set_current_project,
+            rotate_task,
             add_task,
             remove_task,
             start_tracking,
