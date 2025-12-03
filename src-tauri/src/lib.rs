@@ -986,6 +986,9 @@ fn add_mock_data(state: State<AppState>) -> Vec<Project> {
         (30, 11, 45), (30, 15, 30),
     ];
 
+    // Calculate the start of today (midnight UTC) for proper day offset calculation
+    let today_start = (now / day_seconds) * day_seconds;
+
     let mut task_counter: usize = 0;
 
     for (project_name, tasks) in mock_projects {
@@ -1003,6 +1006,21 @@ fn add_mock_data(state: State<AppState>) -> Vec<Project> {
             let mut total_time: u64 = 0;
             let entries_offset = task_counter % 5; // Offset entries to vary by task
 
+            // Calculate total time first
+            for (days_ago, _, duration_minutes) in &time_entries_template {
+                if (*days_ago + entries_offset as u64) % 3 == 0 {
+                    continue;
+                }
+                total_time += duration_minutes * 60;
+            }
+
+            // Insert task FIRST (before time entries due to foreign key constraint)
+            db.execute(
+                "INSERT INTO tasks (id, project_id, name, time_seconds) VALUES (?, ?, ?, ?)",
+                params![task_id, project_id, task_name, total_time],
+            ).ok();
+
+            // Now insert time entries (task exists, foreign key satisfied)
             for (days_ago, hour, duration_minutes) in &time_entries_template {
                 // Skip some entries based on task to create variation
                 if (*days_ago + entries_offset as u64) % 3 == 0 {
@@ -1010,21 +1028,16 @@ fn add_mock_data(state: State<AppState>) -> Vec<Project> {
                 }
 
                 let duration_seconds = duration_minutes * 60;
-                let start_time = now - (days_ago * day_seconds) + (hour * 3600);
+                // Calculate proper timestamp: start of day X days ago + hour offset
+                let day_start = today_start - (days_ago * day_seconds);
+                let start_time = day_start + (hour * 3600);
                 let end_time = start_time + duration_seconds;
 
                 db.execute(
                     "INSERT INTO time_entries (project_id, task_id, start_time, end_time, duration_seconds) VALUES (?, ?, ?, ?, ?)",
                     params![project_id, task_id, start_time, end_time, duration_seconds],
                 ).ok();
-
-                total_time += duration_seconds;
             }
-
-            db.execute(
-                "INSERT INTO tasks (id, project_id, name, time_seconds) VALUES (?, ?, ?, ?)",
-                params![task_id, project_id, task_name, total_time],
-            ).ok();
 
             project_tasks.push(Task {
                 id: task_id,
