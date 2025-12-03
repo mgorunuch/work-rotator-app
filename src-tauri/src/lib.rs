@@ -535,6 +535,19 @@ pub fn run() {
             active_tracking: Mutex::new(active_tracking),
         })
         .setup(|app| {
+            // Set window height to 80% of screen
+            if let Some(window) = app.get_webview_window("main") {
+                if let Some(monitor) = window.current_monitor().ok().flatten() {
+                    let screen_height = monitor.size().height as f64 / monitor.scale_factor();
+                    let target_height = (screen_height * 0.8) as u32;
+                    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+                        width: (400.0 * monitor.scale_factor()) as u32,
+                        height: (target_height as f64 * monitor.scale_factor()) as u32,
+                    }));
+                    let _ = window.center();
+                }
+            }
+
             let icon_bytes = include_bytes!("../icons/32x32.png");
             let icon = Image::from_bytes(icon_bytes).expect("Failed to load tray icon");
 
