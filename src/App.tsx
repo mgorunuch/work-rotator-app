@@ -3,8 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import "./App.css";
 
-const HOTKEY_PROJECT = "CommandOrControl+Shift+P";
-const HOTKEY_TASK = "CommandOrControl+Shift+O";
+const DEFAULT_HOTKEY_PROJECT = "CommandOrControl+Shift+P";
+const DEFAULT_HOTKEY_TASK = "CommandOrControl+Shift+O";
+
+interface HotkeySettings {
+  projectHotkey: string;
+  taskHotkey: string;
+}
 
 interface Task {
   id: number;
@@ -36,20 +41,6 @@ const formatTime = (seconds: number): string => {
 
 type View = "main" | "donate" | "settings";
 
-interface HeaderIndicatorSettings {
-  showProjectIndex: boolean;
-  showTrackingStatus: boolean;
-  showTotalTime: boolean;
-  showProjectName: boolean;
-}
-
-const defaultIndicatorSettings: HeaderIndicatorSettings = {
-  showProjectIndex: true,
-  showTrackingStatus: true,
-  showTotalTime: false,
-  showProjectName: false,
-};
-
 interface AdData {
   url: string;
   imagePath: string;
@@ -74,11 +65,11 @@ function App() {
   });
   const [adData, setAdData] = useState<AdData | null>(null);
   const [adLoading, setAdLoading] = useState(false);
-  const [indicatorSettings, setIndicatorSettings] = useState<HeaderIndicatorSettings>(() => {
-    const saved = localStorage.getItem("indicatorSettings");
-    return saved ? { ...defaultIndicatorSettings, ...JSON.parse(saved) } : defaultIndicatorSettings;
+  const [hotkeySettings, setHotkeySettings] = useState<HotkeySettings>(() => {
+    const saved = localStorage.getItem("hotkeySettings");
+    return saved ? JSON.parse(saved) : { projectHotkey: DEFAULT_HOTKEY_PROJECT, taskHotkey: DEFAULT_HOTKEY_TASK };
   });
-
+  const [recordingHotkey, setRecordingHotkey] = useState<"project" | "task" | null>(null);
   const currentProject = projects[currentProjectIndex] || null;
 
   const loadData = useCallback(async () => {
@@ -95,7 +86,7 @@ function App() {
 
   const registerHotkeys = useCallback(async () => {
     try {
-      await register(HOTKEY_PROJECT, async (event) => {
+      await register(hotkeySettings.projectHotkey, async (event) => {
         if (event.state === "Pressed") {
           const [index] = await invoke<[number, Project | null]>("rotate_project");
           setCurrentProjectIndex(index);
@@ -117,7 +108,7 @@ function App() {
           }
         }
       });
-      await register(HOTKEY_TASK, async (event) => {
+      await register(hotkeySettings.taskHotkey, async (event) => {
         if (event.state === "Pressed") {
           const task = await invoke<Task | null>("rotate_task");
           if (task) {
@@ -141,16 +132,27 @@ function App() {
       console.error("Failed to register hotkeys:", e);
       setHotkeyRegistered(false);
     }
-  }, []);
+  }, [hotkeySettings]);
 
   useEffect(() => {
     loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    // Don't register hotkeys when on settings page
+    if (currentView === "settings") {
+      unregister(hotkeySettings.projectHotkey).catch(console.error);
+      unregister(hotkeySettings.taskHotkey).catch(console.error);
+      setHotkeyRegistered(false);
+      return;
+    }
+
     registerHotkeys();
     return () => {
-      unregister(HOTKEY_PROJECT).catch(console.error);
-      unregister(HOTKEY_TASK).catch(console.error);
+      unregister(hotkeySettings.projectHotkey).catch(console.error);
+      unregister(hotkeySettings.taskHotkey).catch(console.error);
     };
-  }, [loadData, registerHotkeys]);
+  }, [registerHotkeys, hotkeySettings, currentView]);
 
   useEffect(() => {
     if (!activeTracking) {
@@ -306,53 +308,67 @@ function App() {
     localStorage.setItem("adsEnabled", JSON.stringify(newValue));
   };
 
-  const toggleIndicator = (key: keyof HeaderIndicatorSettings) => {
-    const newSettings = { ...indicatorSettings, [key]: !indicatorSettings[key] };
-    setIndicatorSettings(newSettings);
-    localStorage.setItem("indicatorSettings", JSON.stringify(newSettings));
+  const formatHotkeyForDisplay = (hotkey: string): string => {
+    return hotkey
+      .replace("CommandOrControl", "Cmd/Ctrl")
+      .replace("Shift", "Shift")
+      .replace("Alt", "Alt")
+      .replace(/\+/g, " + ");
   };
 
-  const getTotalTimeToday = (): number => {
-    const totalBase = projects.reduce((sum, project) =>
-      sum + project.tasks.reduce((taskSum, task) => taskSum + task.time_seconds, 0), 0);
-    return activeTracking ? totalBase + elapsedTime : totalBase;
+  const handleHotkeyRecord = (e: React.KeyboardEvent, type: "project" | "task") => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Ignore modifier-only keys
+    const ignoredKeys = ["Control", "Shift", "Alt", "Meta", "CapsLock", "Tab", "Escape"];
+    if (ignoredKeys.includes(e.key)) return;
+
+    const parts: string[] = [];
+    if (e.metaKey || e.ctrlKey) parts.push("CommandOrControl");
+    if (e.shiftKey) parts.push("Shift");
+    if (e.altKey) parts.push("Alt");
+
+    // Get the actual key
+    let key = e.key.toUpperCase();
+    if (e.code.startsWith("Key")) {
+      key = e.code.replace("Key", "");
+    } else if (e.code.startsWith("Digit")) {
+      key = e.code.replace("Digit", "");
+    }
+
+    if (/^[A-Z0-9]$/.test(key)) {
+      parts.push(key);
+    } else {
+      return;
+    }
+
+    // Require at least one modifier
+    if (parts.length < 2) return;
+
+    const newHotkey = parts.join("+");
+    const newSettings = {
+      ...hotkeySettings,
+      [type === "project" ? "projectHotkey" : "taskHotkey"]: newHotkey,
+    };
+    setHotkeySettings(newSettings);
+    localStorage.setItem("hotkeySettings", JSON.stringify(newSettings));
+    setRecordingHotkey(null);
+  };
+
+  const resetHotkeys = () => {
+    const defaultSettings = { projectHotkey: DEFAULT_HOTKEY_PROJECT, taskHotkey: DEFAULT_HOTKEY_TASK };
+    setHotkeySettings(defaultSettings);
+    localStorage.setItem("hotkeySettings", JSON.stringify(defaultSettings));
   };
 
   return (
     <div className="app">
       <header className="header">
-        <h1>{currentView === "main" ? "Project Rotator" : currentView === "donate" ? "Support Us" : "Settings"}</h1>
+        <h1>{currentView === "main" ? "Project Rotator" : currentView === "settings" ? "Settings" : "Support Us"}</h1>
         <div className="header-actions">
           {currentView === "main" ? (
             <>
-              <div className="header-indicators">
-                {indicatorSettings.showTrackingStatus && (
-                  <div className={`header-indicator tracking-indicator ${activeTracking ? "active" : ""}`}>
-                    <span className="indicator-dot"></span>
-                    <span>{activeTracking ? "Tracking" : "Idle"}</span>
-                  </div>
-                )}
-                {activeTracking && (
-                  <div className="header-indicator session-timer">
-                    <span>{formatTime(elapsedTime)}</span>
-                  </div>
-                )}
-                {indicatorSettings.showProjectIndex && projects.length > 0 && (
-                  <div className="header-indicator">
-                    <span>{currentProjectIndex + 1}/{projects.length}</span>
-                  </div>
-                )}
-                {indicatorSettings.showTotalTime && (
-                  <div className="header-indicator">
-                    <span>{formatTime(getTotalTimeToday())}</span>
-                  </div>
-                )}
-                {indicatorSettings.showProjectName && currentProject && (
-                  <div className="header-indicator project-name-indicator">
-                    <span>{currentProject.name}</span>
-                  </div>
-                )}
-              </div>
               <button className="nav-btn settings-btn" onClick={() => setCurrentView("settings")}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="12" cy="12" r="3"></circle>
@@ -605,55 +621,45 @@ function App() {
       ) : (
         <div className="settings-view">
           <div className="settings-section">
-            <h2>Header Indicators</h2>
+            <h2>Keyboard Shortcuts</h2>
             <p className="settings-description">
-              Choose which indicators to display in the header bar.
+              Click on a shortcut to record a new key combination.
             </p>
-            <div className="settings-options">
-              <button
-                className={`settings-toggle ${indicatorSettings.showTrackingStatus ? "enabled" : ""}`}
-                onClick={() => toggleIndicator("showTrackingStatus")}
-              >
-                <span className="toggle-track">
-                  <span className="toggle-thumb"></span>
-                </span>
-                <span className="toggle-label">Tracking Status</span>
-                <span className="toggle-description">Show active/idle tracking indicator</span>
-              </button>
-
-              <button
-                className={`settings-toggle ${indicatorSettings.showProjectIndex ? "enabled" : ""}`}
-                onClick={() => toggleIndicator("showProjectIndex")}
-              >
-                <span className="toggle-track">
-                  <span className="toggle-thumb"></span>
-                </span>
-                <span className="toggle-label">Project Index</span>
-                <span className="toggle-description">Show current project position (1/5)</span>
-              </button>
-
-              <button
-                className={`settings-toggle ${indicatorSettings.showTotalTime ? "enabled" : ""}`}
-                onClick={() => toggleIndicator("showTotalTime")}
-              >
-                <span className="toggle-track">
-                  <span className="toggle-thumb"></span>
-                </span>
-                <span className="toggle-label">Total Time</span>
-                <span className="toggle-description">Show total tracked time across all projects</span>
-              </button>
-
-              <button
-                className={`settings-toggle ${indicatorSettings.showProjectName ? "enabled" : ""}`}
-                onClick={() => toggleIndicator("showProjectName")}
-              >
-                <span className="toggle-track">
-                  <span className="toggle-thumb"></span>
-                </span>
-                <span className="toggle-label">Project Name</span>
-                <span className="toggle-description">Show current project name in header</span>
-              </button>
+            <div className="hotkey-list">
+              <div className="hotkey-item">
+                <div className="hotkey-info">
+                  <span className="hotkey-label">Rotate Project</span>
+                  <span className="hotkey-description">Switch to the next project</span>
+                </div>
+                <input
+                  type="text"
+                  readOnly
+                  className={`hotkey-recorder ${recordingHotkey === "project" ? "recording" : ""}`}
+                  value={recordingHotkey === "project" ? "Press keys..." : formatHotkeyForDisplay(hotkeySettings.projectHotkey)}
+                  onFocus={() => setRecordingHotkey("project")}
+                  onBlur={() => setRecordingHotkey(null)}
+                  onKeyDown={(e) => handleHotkeyRecord(e, "project")}
+                />
+              </div>
+              <div className="hotkey-item">
+                <div className="hotkey-info">
+                  <span className="hotkey-label">Rotate Task</span>
+                  <span className="hotkey-description">Switch to the next task</span>
+                </div>
+                <input
+                  type="text"
+                  readOnly
+                  className={`hotkey-recorder ${recordingHotkey === "task" ? "recording" : ""}`}
+                  value={recordingHotkey === "task" ? "Press keys..." : formatHotkeyForDisplay(hotkeySettings.taskHotkey)}
+                  onFocus={() => setRecordingHotkey("task")}
+                  onBlur={() => setRecordingHotkey(null)}
+                  onKeyDown={(e) => handleHotkeyRecord(e, "task")}
+                />
+              </div>
             </div>
+            <button className="reset-hotkeys-btn" onClick={resetHotkeys}>
+              Reset to Defaults
+            </button>
           </div>
         </div>
       )}
