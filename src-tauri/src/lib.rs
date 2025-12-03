@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     image::Image,
     tray::TrayIconBuilder,
-    AppHandle, Manager, State,
+    AppHandle, Manager, State, WindowEvent,
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -928,6 +928,126 @@ fn delete_project_permanent(project_id: u64, state: State<AppState>) -> bool {
     true
 }
 
+#[tauri::command]
+fn reset_database(state: State<AppState>) -> Vec<Project> {
+    let db = state.db.lock().unwrap();
+    let mut projects = state.projects.lock().unwrap();
+    let mut current_index = state.current_project_index.lock().unwrap();
+    let mut next_project_id = state.next_project_id.lock().unwrap();
+    let mut next_task_id = state.next_task_id.lock().unwrap();
+    let mut tracking = state.active_tracking.lock().unwrap();
+
+    // Clear all data from tables
+    db.execute("DELETE FROM time_entries", []).ok();
+    db.execute("DELETE FROM active_tracking", []).ok();
+    db.execute("DELETE FROM tasks", []).ok();
+    db.execute("DELETE FROM projects", []).ok();
+    db.execute("DELETE FROM app_state", []).ok();
+
+    // Reset app state
+    *projects = Vec::new();
+    *current_index = 0;
+    *next_project_id = 1;
+    *next_task_id = 1;
+    *tracking = None;
+
+    projects.clone()
+}
+
+#[tauri::command]
+fn add_mock_data(state: State<AppState>) -> Vec<Project> {
+    let db = state.db.lock().unwrap();
+    let mut projects = state.projects.lock().unwrap();
+    let mut next_project_id = state.next_project_id.lock().unwrap();
+    let mut next_task_id = state.next_task_id.lock().unwrap();
+
+    let now = now_seconds();
+    let day_seconds: u64 = 24 * 60 * 60;
+
+    let mock_projects = vec![
+        ("Work", vec!["Code review", "Write documentation", "Fix bugs", "Team meeting"]),
+        ("Personal", vec!["Exercise", "Read book", "Learn Rust", "Side project"]),
+        ("Learning", vec!["Online course", "Practice coding", "Watch tutorials"]),
+    ];
+
+    // Time entries for each task (days_ago, hour, duration_minutes)
+    let time_entries_template: Vec<(u64, u64, u64)> = vec![
+        (0, 9, 45), (0, 14, 30), (0, 16, 20),
+        (1, 10, 60), (1, 15, 25),
+        (2, 9, 50), (2, 11, 40), (2, 14, 35),
+        (3, 10, 55), (3, 13, 30), (3, 16, 20),
+        (4, 9, 45), (4, 11, 30),
+        (5, 14, 60), (5, 16, 25),
+        (6, 10, 40), (6, 15, 50),
+        (7, 9, 35), (7, 11, 45), (7, 14, 30),
+        (10, 10, 50), (10, 15, 40),
+        (14, 9, 60), (14, 14, 45),
+        (21, 10, 55), (21, 16, 35),
+        (30, 11, 45), (30, 15, 30),
+    ];
+
+    let mut task_counter: usize = 0;
+
+    for (project_name, tasks) in mock_projects {
+        let project_id = *next_project_id;
+        db.execute(
+            "INSERT INTO projects (id, name, current_task_index) VALUES (?, ?, 0)",
+            params![project_id, project_name],
+        ).ok();
+
+        let mut project_tasks = Vec::new();
+        for task_name in tasks {
+            let task_id = *next_task_id;
+
+            // Generate time entries for this task
+            let mut total_time: u64 = 0;
+            let entries_offset = task_counter % 5; // Offset entries to vary by task
+
+            for (days_ago, hour, duration_minutes) in &time_entries_template {
+                // Skip some entries based on task to create variation
+                if (*days_ago + entries_offset as u64) % 3 == 0 {
+                    continue;
+                }
+
+                let duration_seconds = duration_minutes * 60;
+                let start_time = now - (days_ago * day_seconds) + (hour * 3600);
+                let end_time = start_time + duration_seconds;
+
+                db.execute(
+                    "INSERT INTO time_entries (project_id, task_id, start_time, end_time, duration_seconds) VALUES (?, ?, ?, ?, ?)",
+                    params![project_id, task_id, start_time, end_time, duration_seconds],
+                ).ok();
+
+                total_time += duration_seconds;
+            }
+
+            db.execute(
+                "INSERT INTO tasks (id, project_id, name, time_seconds) VALUES (?, ?, ?, ?)",
+                params![task_id, project_id, task_name, total_time],
+            ).ok();
+
+            project_tasks.push(Task {
+                id: task_id,
+                name: task_name.to_string(),
+                time_seconds: total_time,
+                done_at: None,
+            });
+            *next_task_id += 1;
+            task_counter += 1;
+        }
+
+        projects.push(Project {
+            id: project_id,
+            name: project_name.to_string(),
+            tasks: project_tasks,
+            current_task_index: 0,
+        });
+        *next_project_id += 1;
+    }
+
+    projects.clone()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let db_path = get_db_path();
@@ -984,6 +1104,17 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            // Hide window instead of closing when close button is clicked
+            if let Some(window) = app.get_webview_window("main") {
+                let window_clone = window.clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window_clone.hide();
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1013,7 +1144,9 @@ pub fn run() {
             restore_task,
             toggle_task_done,
             delete_task_permanent,
-            delete_project_permanent
+            delete_project_permanent,
+            reset_database,
+            add_mock_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

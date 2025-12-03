@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { usePostHog } from "posthog-js/react";
 import { invoke } from "@tauri-apps/api/core";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { fetch } from "@tauri-apps/plugin-http";
@@ -101,6 +102,7 @@ const AD_WIDTH = 320;
 const AD_HEIGHT = 50;
 
 function App() {
+  const posthog = usePostHog();
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProjectIndex, setCurrentProjectIndex] = useState(0);
   const [newProjectName, setNewProjectName] = useState("");
@@ -128,6 +130,14 @@ function App() {
   const [dailyActivity, setDailyActivity] = useState<DailyActivity[]>([]);
   const [projectStats, setProjectStats] = useState<ProjectTimeStats[]>([]);
   const [allProjectsWithStatus, setAllProjectsWithStatus] = useState<ProjectWithStatus[]>([]);
+  const [confirmModal, setConfirmModal] = useState<{
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
 
   const loadData = useCallback(async () => {
     const loadedProjects = await invoke<Project[]>("get_projects");
@@ -146,6 +156,7 @@ function App() {
           setCurrentProjectIndex(index);
           const loadedProjects = await invoke<Project[]>("get_projects");
           setProjects(loadedProjects);
+          posthog.capture("project_rotated", { source: "hotkey" });
         }
       });
       await register(hotkeySettings.taskHotkey, async (event) => {
@@ -153,12 +164,14 @@ function App() {
           await invoke<Task | null>("rotate_task");
           const loadedProjects = await invoke<Project[]>("get_projects");
           setProjects(loadedProjects);
+          posthog.capture("task_rotated", { source: "hotkey" });
         }
       });
       await register(hotkeySettings.stopHotkey, async (event) => {
         if (event.state === "Pressed") {
           const currentTracking = await invoke<ActiveTracking | null>("get_active_tracking");
           if (currentTracking) {
+            posthog.capture("timer_stopped", { source: "hotkey" });
             await invoke<number | null>("stop_tracking");
             setActiveTracking(null);
             const loadedProjects = await invoke<Project[]>("get_projects");
@@ -179,7 +192,10 @@ function App() {
                   taskId: currentTask.id,
                 });
                 setActiveTracking(tracking);
-                if (tracking) setElapsedTime(0);
+                if (tracking) {
+                  setElapsedTime(0);
+                  posthog.capture("timer_started", { source: "hotkey" });
+                }
               }
             }
             setProjects(loadedProjects);
@@ -191,11 +207,15 @@ function App() {
       console.error("Failed to register hotkeys:", e);
       setHotkeyRegistered(false);
     }
-  }, [hotkeySettings]);
+  }, [hotkeySettings, posthog]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    posthog.capture("$pageview", { view: currentView });
+  }, [currentView, posthog]);
 
   useEffect(() => {
     // Don't register hotkeys when on settings page
@@ -233,15 +253,15 @@ function App() {
   useEffect(() => {
     const updateTray = async () => {
       let title = "";
-      const truncateName = (name: string, maxLen = 10) =>
+      const truncateName = (name: string, maxLen = 20) =>
         name.length > maxLen ? name.slice(0, maxLen) + "…" : name;
 
       if (activeTracking && currentProject) {
         const task = currentProject.tasks.find(t => t.id === activeTracking.task_id);
         const taskName = task ? task.name : "";
-        title = `[${truncateName(currentProject.name, 6)}] ${truncateName(taskName, 8)} │ ${formatTime(elapsedTime)}`;
+        title = `[${truncateName(currentProject.name, 10)}] ${truncateName(taskName, 12)} │ ${formatTime(elapsedTime)}`;
       } else if (currentProject) {
-        title = `${truncateName(currentProject.name)} (${currentProjectIndex + 1}/${projects.length})`;
+        title = truncateName(currentProject.name, 25);
       } else {
         title = "Rotator";
       }
@@ -314,6 +334,7 @@ function App() {
     const updated = await invoke<Project[]>("add_project", { name: newProjectName.trim() });
     setProjects(updated);
     setNewProjectName("");
+    posthog.capture("project_added");
   };
 
   const removeProject = async (projectId: number) => {
@@ -323,6 +344,7 @@ function App() {
     setCurrentProjectIndex(newIndex);
     const tracking = await invoke<ActiveTracking | null>("get_active_tracking");
     setActiveTracking(tracking);
+    posthog.capture("project_archived");
   };
 
   const addTask = async (projectId: number) => {
@@ -333,6 +355,7 @@ function App() {
       setProjects(projects.map(p => p.id === projectId ? updated : p));
     }
     setNewTaskNames(prev => ({ ...prev, [projectId]: "" }));
+    posthog.capture("task_added");
   };
 
   const removeTask = async (projectId: number, taskId: number) => {
@@ -342,6 +365,7 @@ function App() {
     }
     const tracking = await invoke<ActiveTracking | null>("get_active_tracking");
     setActiveTracking(tracking);
+    posthog.capture("task_archived");
   };
 
   const toggleTaskDone = async (projectId: number, taskId: number, done: boolean) => {
@@ -349,6 +373,7 @@ function App() {
     if (updated) {
       setProjects(projects.map(p => p.id === projectId ? updated : p));
     }
+    posthog.capture(done ? "task_completed" : "task_uncompleted");
   };
 
   const startTracking = async (projectId: number, taskId: number) => {
@@ -356,10 +381,12 @@ function App() {
     setActiveTracking(tracking);
     if (tracking) {
       setElapsedTime(0);
+      posthog.capture("timer_started");
     }
   };
 
   const stopTracking = async () => {
+    posthog.capture("timer_stopped", { duration_seconds: elapsedTime });
     await invoke<number | null>("stop_tracking");
     setActiveTracking(null);
     await loadData();
@@ -369,12 +396,14 @@ function App() {
     if (projects.length === 0) return;
     const [index] = await invoke<[number, Project | null]>("rotate_project");
     setCurrentProjectIndex(index);
+    posthog.capture("project_rotated");
   };
 
   const rotateTask = async () => {
     await invoke<Task | null>("rotate_task");
     const loadedProjects = await invoke<Project[]>("get_projects");
     setProjects(loadedProjects);
+    posthog.capture("task_rotated");
   };
 
   const selectProject = async (index: number) => {
@@ -383,6 +412,7 @@ function App() {
     const currentIdx = await invoke<number>("get_current_project_index");
     setProjects(loadedProjects);
     setCurrentProjectIndex(currentIdx);
+    posthog.capture("project_selected");
   };
 
   const getTaskTime = (task: Task): number => {
@@ -399,6 +429,7 @@ function App() {
     const newValue = !adsEnabled;
     setAdsEnabled(newValue);
     localStorage.setItem("adsEnabled", JSON.stringify(newValue));
+    posthog.capture(newValue ? "ads_enabled" : "ads_disabled");
   };
 
   const formatHotkeyForDisplay = (hotkey: string): string => {
@@ -656,13 +687,41 @@ function App() {
     <div className="app">
       {currentView === "main" ? (
         <>
+          {adsEnabled && (
+            <div className="main-ad-banner">
+              {adLoading ? (
+                <div className="ad-banner-preview ad-loading">
+                  <span className="ad-text">Loading ad...</span>
+                </div>
+              ) : adData ? (
+                <a
+                  href={adData.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ad-banner-link"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    openUrl(adData.url);
+                  }}
+                >
+                  <img
+                    src={getAdImageUrl(adData.imagePath)}
+                    alt="Advertisement"
+                    className="ad-banner-image"
+                    width={AD_WIDTH}
+                    height={AD_HEIGHT}
+                  />
+                </a>
+              ) : null}
+            </div>
+          )}
           {currentProject && (
             <div className="current-section" onClick={rotateManually}>
               <span className="hotkey-badge">{formatHotkeyShort(hotkeySettings.projectHotkey)}</span>
               <div className="current-label">Current Project</div>
               <div className="current-value">{currentProject.name}</div>
               <div className="current-indicator">
-                {currentProjectIndex + 1} of {projects.length} • {formatTime(getProjectTotalTime(currentProject))}
+                {formatTime(getProjectTotalTime(currentProject))}
               </div>
             </div>
           )}
@@ -681,7 +740,7 @@ function App() {
                   <div className="current-label">Current Task</div>
                   <div className="current-value">{currentTask.name}</div>
                   <div className="current-indicator">
-                    {(currentProject.current_task_index % activeTasks.length) + 1} of {activeTasks.length} • {formatTime(currentTask.time_seconds)}
+                    {formatTime(currentTask.time_seconds)}
                   </div>
                 </div>
                 <div className="tracking-controls">
@@ -985,6 +1044,15 @@ function App() {
               />
             </div>
           </div>
+
+          <div className="donate-section sale-section">
+            <h2>For Sale</h2>
+            <p className="donate-description">
+              The app is on sale in a bidding format starting from $10,000.
+              <br />
+              <a href="mailto:contact@the-ihor.com" className="sale-contact">Get in touch</a> to make a bid.
+            </p>
+          </div>
         </div>
       ) : currentView === "settings" ? (
         <div className="settings-view">
@@ -1043,6 +1111,53 @@ function App() {
             <button className="reset-hotkeys-btn" onClick={resetHotkeys}>
               Reset to Defaults
             </button>
+          </div>
+          <div className="settings-section">
+            <h2>Database</h2>
+            <p className="settings-description">
+              Manage your database. Warning: These actions cannot be undone.
+            </p>
+            <div className="database-actions">
+              <button
+                className="danger-btn"
+                onClick={() => {
+                  setConfirmModal({
+                    title: "Reset Database",
+                    message: "Are you sure you want to reset the database? All projects, tasks, and time entries will be permanently deleted.",
+                    confirmText: "Reset",
+                    danger: true,
+                    onConfirm: async () => {
+                      try {
+                        const newProjects = await invoke<Project[]>("reset_database");
+                        setProjects(newProjects);
+                        setActiveTracking(null);
+                        setElapsedTime(0);
+                        setCurrentView("main");
+                      } catch (e) {
+                        console.error("Reset database error:", e);
+                      }
+                    },
+                  });
+                }}
+              >
+                Reset Database
+              </button>
+              <button
+                className="secondary-btn"
+                onClick={async () => {
+                  try {
+                    const newProjects = await invoke<Project[]>("add_mock_data");
+                    setProjects(newProjects);
+                    setCurrentView("main");
+                  } catch (e) {
+                    console.error("Add mock data error:", e);
+                    alert("Failed to add mock data: " + e);
+                  }
+                }}
+              >
+                Add Mock Data
+              </button>
+            </div>
           </div>
         </div>
       ) : currentView === "database" ? (
@@ -1276,6 +1391,32 @@ function App() {
           </button>
         )}
       </footer>
+
+      {confirmModal && (
+        <div className="modal-overlay" onClick={() => setConfirmModal(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <h3 className="modal-title">{confirmModal.title}</h3>
+            <p className="modal-message">{confirmModal.message}</p>
+            <div className="modal-actions">
+              <button
+                className="modal-btn modal-btn-cancel"
+                onClick={() => setConfirmModal(null)}
+              >
+                {confirmModal.cancelText || "Cancel"}
+              </button>
+              <button
+                className={`modal-btn ${confirmModal.danger ? "modal-btn-danger" : "modal-btn-confirm"}`}
+                onClick={() => {
+                  confirmModal.onConfirm();
+                  setConfirmModal(null);
+                }}
+              >
+                {confirmModal.confirmText || "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
