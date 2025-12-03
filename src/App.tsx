@@ -504,8 +504,7 @@ function App() {
                   <span className="project-time">{formatTime(getProjectTotalTime(project))}</span>
                 </div>
 
-                {index === currentProjectIndex && (
-                  <div className="tasks-section">
+                <div className="tasks-section">
                     <div className="inline-add-form task-inline-add">
                       <span className="inline-add-icon" onClick={() => taskInputRef.current?.focus()}>+</span>
                       <input
@@ -600,7 +599,6 @@ function App() {
                       </ul>
                     )}
                   </div>
-                )}
               </li>
             ))}
           </ul>
