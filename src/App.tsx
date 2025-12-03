@@ -58,7 +58,6 @@ function App() {
   const [newTaskName, setNewTaskName] = useState("");
   const [_hotkeyRegistered, setHotkeyRegistered] = useState(false);
   const [activeTracking, setActiveTracking] = useState<ActiveTracking | null>(null);
-  const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [currentView, setCurrentView] = useState<View>("main");
   const [adsEnabled, setAdsEnabled] = useState(() => {
@@ -84,10 +83,7 @@ function App() {
     setProjects(loadedProjects);
     setCurrentProjectIndex(index);
     setActiveTracking(tracking);
-    if (loadedProjects.length > 0 && expandedProjectId === null) {
-      setExpandedProjectId(loadedProjects[index]?.id ?? null);
-    }
-  }, [expandedProjectId]);
+  }, []);
 
   const registerHotkeys = useCallback(async () => {
     try {
@@ -98,7 +94,6 @@ function App() {
           const loadedProjects = await invoke<Project[]>("get_projects");
           const project = loadedProjects[index];
           if (project) {
-            setExpandedProjectId(project.id);
             setProjects(loadedProjects);
             // Auto-start tracking current task
             const task = project.tasks[project.current_task_index];
@@ -246,9 +241,6 @@ function App() {
     const updated = await invoke<Project[]>("add_project", { name: newProjectName.trim() });
     setProjects(updated);
     setNewProjectName("");
-    if (updated.length === 1) {
-      setExpandedProjectId(updated[0].id);
-    }
   };
 
   const removeProject = async (projectId: number) => {
@@ -296,15 +288,11 @@ function App() {
     if (projects.length === 0) return;
     const [index] = await invoke<[number, Project | null]>("rotate_project");
     setCurrentProjectIndex(index);
-    if (projects[index]) {
-      setExpandedProjectId(projects[index].id);
-    }
   };
 
   const selectProject = async (index: number) => {
     await invoke<number>("set_current_project", { index });
     setCurrentProjectIndex(index);
-    setExpandedProjectId(projects[index].id);
   };
 
   const getTaskTime = (task: Task): number => {
@@ -448,39 +436,20 @@ function App() {
                   <span className="project-name">{project.name}</span>
                   <span className="project-time">{formatTime(getProjectTotalTime(project))}</span>
                   <button
-                    className="expand-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setExpandedProjectId(expandedProjectId === project.id ? null : project.id);
-                    }}
-                  >
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      style={{ transform: expandedProjectId === project.id ? "rotate(180deg)" : "rotate(0)" }}
-                    >
-                      <polyline points="6 9 12 15 18 9"></polyline>
-                    </svg>
-                  </button>
-                  <button
                     className="remove-btn"
                     onClick={(e) => {
                       e.stopPropagation();
                       removeProject(project.id);
                     }}
                   >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <line x1="18" y1="6" x2="6" y2="18"></line>
                       <line x1="6" y1="6" x2="18" y2="18"></line>
                     </svg>
                   </button>
                 </div>
 
-                {expandedProjectId === project.id && (
+                {index === currentProjectIndex && (
                   <div className="tasks-section">
                     <div className="inline-add-form task-inline-add">
                       <span className="inline-add-icon" onClick={() => taskInputRef.current?.focus()}>+</span>
@@ -533,7 +502,7 @@ function App() {
                                 className="remove-task-btn"
                                 onClick={() => removeTask(project.id, task.id)}
                               >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                   <line x1="18" y1="6" x2="6" y2="18"></line>
                                   <line x1="6" y1="6" x2="18" y2="18"></line>
                                 </svg>
