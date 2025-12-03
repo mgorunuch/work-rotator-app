@@ -375,6 +375,14 @@ function App() {
     localStorage.setItem("hotkeySettings", JSON.stringify(defaultSettings));
   };
 
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setEditing(null);
+    };
+    document.addEventListener("keydown", handleEsc);
+    return () => document.removeEventListener("keydown", handleEsc);
+  }, []);
+
   const renameProject = async (projectId: number, newName: string) => {
     if (!newName.trim()) return;
     const updated = await invoke<Project[]>("rename_project", { projectId, newName: newName.trim() });
