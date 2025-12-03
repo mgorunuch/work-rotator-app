@@ -349,6 +349,41 @@ fn remove_task(project_id: u64, task_id: u64, state: State<AppState>) -> Option<
 }
 
 #[tauri::command]
+fn rename_project(project_id: u64, new_name: String, state: State<AppState>) -> Vec<Project> {
+    let mut projects = state.projects.lock().unwrap();
+    let db = state.db.lock().unwrap();
+
+    if let Some(project) = projects.iter_mut().find(|p| p.id == project_id) {
+        project.name = new_name.clone();
+        db.execute(
+            "UPDATE projects SET name = ? WHERE id = ?",
+            params![new_name, project_id],
+        ).ok();
+    }
+
+    projects.clone()
+}
+
+#[tauri::command]
+fn rename_task(project_id: u64, task_id: u64, new_name: String, state: State<AppState>) -> Option<Project> {
+    let mut projects = state.projects.lock().unwrap();
+    let db = state.db.lock().unwrap();
+
+    if let Some(project) = projects.iter_mut().find(|p| p.id == project_id) {
+        if let Some(task) = project.tasks.iter_mut().find(|t| t.id == task_id) {
+            task.name = new_name.clone();
+            db.execute(
+                "UPDATE tasks SET name = ? WHERE id = ?",
+                params![new_name, task_id],
+            ).ok();
+        }
+        return Some(project.clone());
+    }
+
+    None
+}
+
+#[tauri::command]
 fn start_tracking(project_id: u64, task_id: u64, state: State<AppState>) -> Option<ActiveTracking> {
     let projects = state.projects.lock().unwrap();
     let mut tracking = state.active_tracking.lock().unwrap();
@@ -525,11 +560,13 @@ pub fn run() {
             get_current_project_index,
             add_project,
             remove_project,
+            rename_project,
             rotate_project,
             set_current_project,
             rotate_task,
             add_task,
             remove_task,
+            rename_task,
             start_tracking,
             stop_tracking,
             get_active_tracking,

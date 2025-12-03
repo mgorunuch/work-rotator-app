@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import "./App.css";
 
 const DEFAULT_HOTKEY_PROJECT = "CommandOrControl+Shift+P";
@@ -75,7 +76,7 @@ function App() {
   const currentProject = projects[currentProjectIndex] || null;
   const projectInputRef = useRef<HTMLInputElement>(null);
   const taskInputRef = useRef<HTMLInputElement>(null);
-  const [openMenu, setOpenMenu] = useState<{ type: "project" | "task"; id: number } | null>(null);
+  const [editing, setEditing] = useState<{ type: "project" | "task"; id: number; value: string } | null>(null);
 
   const loadData = useCallback(async () => {
     const loadedProjects = await invoke<Project[]>("get_projects");
@@ -374,12 +375,21 @@ function App() {
     localStorage.setItem("hotkeySettings", JSON.stringify(defaultSettings));
   };
 
-  useEffect(() => {
-    if (!openMenu) return;
-    const handleClick = () => setOpenMenu(null);
-    document.addEventListener("click", handleClick);
-    return () => document.removeEventListener("click", handleClick);
-  }, [openMenu]);
+  const renameProject = async (projectId: number, newName: string) => {
+    if (!newName.trim()) return;
+    const updated = await invoke<Project[]>("rename_project", { projectId, newName: newName.trim() });
+    setProjects(updated);
+    setEditing(null);
+  };
+
+  const renameTask = async (projectId: number, taskId: number, newName: string) => {
+    if (!newName.trim()) return;
+    const updated = await invoke<Project | null>("rename_task", { projectId, taskId, newName: newName.trim() });
+    if (updated) {
+      setProjects(projects.map(p => p.id === projectId ? updated : p));
+    }
+    setEditing(null);
+  };
 
   return (
     <div className="app">
@@ -440,37 +450,50 @@ function App() {
                   className={`project-header ${index === currentProjectIndex ? "active" : ""}`}
                   onClick={() => selectProject(index)}
                 >
-                  <div className="dots-menu-wrapper">
-                    <button
-                      className="dots-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setOpenMenu(openMenu?.type === "project" && openMenu.id === project.id ? null : { type: "project", id: project.id });
-                      }}
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                        <circle cx="12" cy="5" r="2"></circle>
-                        <circle cx="12" cy="12" r="2"></circle>
-                        <circle cx="12" cy="19" r="2"></circle>
-                      </svg>
-                    </button>
-                    {openMenu?.type === "project" && openMenu.id === project.id && (
-                      <div className="dots-dropdown">
-                        <button
+                  <DropdownMenu.Root>
+                    <DropdownMenu.Trigger asChild>
+                      <button className="dots-btn" onClick={(e) => e.stopPropagation()}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                          <circle cx="12" cy="5" r="2"></circle>
+                          <circle cx="12" cy="12" r="2"></circle>
+                          <circle cx="12" cy="19" r="2"></circle>
+                        </svg>
+                      </button>
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Portal>
+                      <DropdownMenu.Content className="dropdown-content" sideOffset={5} align="start">
+                        <DropdownMenu.Item
+                          className="dropdown-item"
+                          onSelect={() => setEditing({ type: "project", id: project.id, value: project.name })}
+                        >
+                          Edit
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item
                           className="dropdown-item danger"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            removeProject(project.id);
-                            setOpenMenu(null);
-                          }}
+                          onSelect={() => removeProject(project.id)}
                         >
                           Delete
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                        </DropdownMenu.Item>
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Portal>
+                  </DropdownMenu.Root>
                   <span className="project-index">{index + 1}</span>
-                  <span className="project-name">{project.name}</span>
+                  {editing?.type === "project" && editing.id === project.id ? (
+                    <input
+                      className="inline-edit-input"
+                      value={editing.value}
+                      onChange={(e) => setEditing({ ...editing, value: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") renameProject(project.id, editing.value);
+                        if (e.key === "Escape") setEditing(null);
+                      }}
+                      onBlur={() => renameProject(project.id, editing.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      autoFocus
+                    />
+                  ) : (
+                    <span className="project-name">{project.name}</span>
+                  )}
                   <span className="project-time">{formatTime(getProjectTotalTime(project))}</span>
                 </div>
 
@@ -507,36 +530,48 @@ function App() {
                           const isTracking = activeTracking?.project_id === project.id && activeTracking?.task_id === task.id;
                           return (
                             <li key={task.id} className={`task-item ${isTracking ? "tracking" : ""}`}>
-                              <div className="dots-menu-wrapper">
-                                <button
-                                  className="dots-btn small"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setOpenMenu(openMenu?.type === "task" && openMenu.id === task.id ? null : { type: "task", id: task.id });
-                                  }}
-                                >
-                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                                    <circle cx="12" cy="5" r="2"></circle>
-                                    <circle cx="12" cy="12" r="2"></circle>
-                                    <circle cx="12" cy="19" r="2"></circle>
-                                  </svg>
-                                </button>
-                                {openMenu?.type === "task" && openMenu.id === task.id && (
-                                  <div className="dots-dropdown">
-                                    <button
+                              <DropdownMenu.Root>
+                                <DropdownMenu.Trigger asChild>
+                                  <button className="dots-btn small">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                                      <circle cx="12" cy="5" r="2"></circle>
+                                      <circle cx="12" cy="12" r="2"></circle>
+                                      <circle cx="12" cy="19" r="2"></circle>
+                                    </svg>
+                                  </button>
+                                </DropdownMenu.Trigger>
+                                <DropdownMenu.Portal>
+                                  <DropdownMenu.Content className="dropdown-content" sideOffset={5} align="start">
+                                    <DropdownMenu.Item
+                                      className="dropdown-item"
+                                      onSelect={() => setEditing({ type: "task", id: task.id, value: task.name })}
+                                    >
+                                      Edit
+                                    </DropdownMenu.Item>
+                                    <DropdownMenu.Item
                                       className="dropdown-item danger"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        removeTask(project.id, task.id);
-                                        setOpenMenu(null);
-                                      }}
+                                      onSelect={() => removeTask(project.id, task.id)}
                                     >
                                       Delete
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                              <span className="task-name">{task.name}</span>
+                                    </DropdownMenu.Item>
+                                  </DropdownMenu.Content>
+                                </DropdownMenu.Portal>
+                              </DropdownMenu.Root>
+                              {editing?.type === "task" && editing.id === task.id ? (
+                                <input
+                                  className="inline-edit-input small"
+                                  value={editing.value}
+                                  onChange={(e) => setEditing({ ...editing, value: e.target.value })}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") renameTask(project.id, task.id, editing.value);
+                                    if (e.key === "Escape") setEditing(null);
+                                  }}
+                                  onBlur={() => renameTask(project.id, task.id, editing.value)}
+                                  autoFocus
+                                />
+                              ) : (
+                                <span className="task-name">{task.name}</span>
+                              )}
                               <span className="task-time">{formatTime(getTaskTime(task))}</span>
                               <button
                                 className={`track-btn ${isTracking ? "stop" : "start"}`}

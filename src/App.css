@@ -345,11 +345,6 @@ body {
 }
 
 /* Dots Menu */
-.dots-menu-wrapper {
-  position: relative;
-  flex-shrink: 0;
-}
-
 .dots-btn {
   width: 24px;
   height: 24px;
@@ -363,6 +358,7 @@ body {
   cursor: pointer;
   opacity: 0.4;
   transition: opacity 0.15s, background 0.15s;
+  flex-shrink: 0;
 }
 
 .dots-btn.small {
@@ -371,39 +367,48 @@ body {
 }
 
 .dots-btn:hover,
+.dots-btn[data-state="open"],
 .project-header:hover .dots-btn,
 .task-item:hover .dots-btn {
   opacity: 1;
   background: var(--bg-tertiary);
 }
 
-.dots-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  margin-top: 4px;
+/* Radix Dropdown */
+.dropdown-content {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
   min-width: 100px;
   z-index: 100;
   overflow: hidden;
+  animation: dropdownFadeIn 0.15s ease-out;
+}
+
+@keyframes dropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .dropdown-item {
-  width: 100%;
   padding: 8px 12px;
-  background: transparent;
-  border: none;
-  text-align: left;
   font-size: 0.85rem;
   color: var(--text-primary);
   cursor: pointer;
+  outline: none;
   transition: background 0.15s;
 }
 
-.dropdown-item:hover {
+.dropdown-item:hover,
+.dropdown-item:focus,
+.dropdown-item[data-highlighted] {
   background: var(--bg-hover);
 }
 
@@ -411,8 +416,27 @@ body {
   color: var(--danger);
 }
 
-.dropdown-item.danger:hover {
+.dropdown-item.danger:hover,
+.dropdown-item.danger:focus,
+.dropdown-item.danger[data-highlighted] {
   background: rgba(239, 68, 68, 0.1);
+}
+
+/* Inline Edit */
+.inline-edit-input {
+  flex: 1;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.inline-edit-input.small {
+  font-size: 0.85rem;
+  padding: 2px 6px;
 }
 
 .tasks-section {
