@@ -256,12 +256,21 @@ function App() {
       const truncateName = (name: string, maxLen = 20) =>
         name.length > maxLen ? name.slice(0, maxLen) + "…" : name;
 
-      if (activeTracking && currentProject) {
-        const task = currentProject.tasks.find(t => t.id === activeTracking.task_id);
-        const taskName = task ? task.name : "";
-        title = `[${truncateName(currentProject.name, 10)}] ${truncateName(taskName, 12)} │ ${formatTime(elapsedTime)}`;
-      } else if (currentProject) {
-        title = truncateName(currentProject.name, 25);
+      if (currentProject) {
+        const activeTasks = currentProject.tasks.filter(t => t.done_at === null);
+        const currentTask = activeTasks.length > 0
+          ? activeTasks[currentProject.current_task_index % activeTasks.length]
+          : null;
+
+        if (activeTracking) {
+          const task = currentProject.tasks.find(t => t.id === activeTracking.task_id);
+          const taskName = task ? task.name : "";
+          title = `[${truncateName(currentProject.name, 10)}] ${truncateName(taskName, 12)} │ ${formatTime(elapsedTime)}`;
+        } else if (currentTask) {
+          title = `[${truncateName(currentProject.name, 10)}] ${truncateName(currentTask.name, 15)}`;
+        } else {
+          title = truncateName(currentProject.name, 25);
+        }
       } else {
         title = "Rotator";
       }
