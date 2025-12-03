@@ -33,6 +33,16 @@ const formatTime = (seconds: number): string => {
   return `${s}s`;
 };
 
+type View = "main" | "donate";
+
+interface AdData {
+  url: string;
+  imagePath: string;
+}
+
+const AD_WIDTH = 320;
+const AD_HEIGHT = 50;
+
 function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProjectIndex, setCurrentProjectIndex] = useState(0);
@@ -42,6 +52,13 @@ function App() {
   const [activeTracking, setActiveTracking] = useState<ActiveTracking | null>(null);
   const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
   const [elapsedTime, setElapsedTime] = useState(0);
+  const [currentView, setCurrentView] = useState<View>("main");
+  const [adsEnabled, setAdsEnabled] = useState(() => {
+    const saved = localStorage.getItem("adsEnabled");
+    return saved ? JSON.parse(saved) : false;
+  });
+  const [adData, setAdData] = useState<AdData | null>(null);
+  const [adLoading, setAdLoading] = useState(false);
 
   const currentProject = projects[currentProjectIndex] || null;
 
@@ -97,6 +114,36 @@ function App() {
 
     return () => clearInterval(interval);
   }, [activeTracking]);
+
+  useEffect(() => {
+    if (!adsEnabled) {
+      setAdData(null);
+      return;
+    }
+
+    const fetchAd = async () => {
+      setAdLoading(true);
+      try {
+        const response = await fetch("https://the-ihor.com/ads/rotator");
+        if (response.ok) {
+          const data: AdData = await response.json();
+          setAdData(data);
+        }
+      } catch (error) {
+        console.error("Failed to fetch ad:", error);
+      } finally {
+        setAdLoading(false);
+      }
+    };
+
+    fetchAd();
+  }, [adsEnabled]);
+
+  const getAdImageUrl = (imagePath: string): string => {
+    return imagePath
+      .replace("$WIDTH", String(AD_WIDTH))
+      .replace("$HEIGHT", String(AD_HEIGHT));
+  };
 
   const addProject = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -175,43 +222,69 @@ function App() {
   const getProjectTotalTime = (project: Project): number =>
     project.tasks.reduce((sum, task) => sum + getTaskTime(task), 0);
 
+  const toggleAds = () => {
+    const newValue = !adsEnabled;
+    setAdsEnabled(newValue);
+    localStorage.setItem("adsEnabled", JSON.stringify(newValue));
+  };
+
   return (
     <div className="app">
       <header className="header">
-        <h1>Project Rotator</h1>
-        <div className={`hotkey-badge ${hotkeyRegistered ? "active" : "inactive"}`}>
-          <kbd>{HOTKEY.replace("CommandOrControl", "⌘")}</kbd>
-          <span>{hotkeyRegistered ? "Active" : "Inactive"}</span>
+        <h1>{currentView === "main" ? "Project Rotator" : "Support Us"}</h1>
+        <div className="header-actions">
+          {currentView === "main" ? (
+            <>
+              <button className="nav-btn donate-btn" onClick={() => setCurrentView("donate")}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                </svg>
+              </button>
+              <div className={`hotkey-badge ${hotkeyRegistered ? "active" : "inactive"}`}>
+                <kbd>{HOTKEY.replace("CommandOrControl", "⌘")}</kbd>
+                <span>{hotkeyRegistered ? "Active" : "Inactive"}</span>
+              </div>
+            </>
+          ) : (
+            <button className="nav-btn back-btn" onClick={() => setCurrentView("main")}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="15 18 9 12 15 6"></polyline>
+              </svg>
+              Back
+            </button>
+          )}
         </div>
       </header>
 
-      {currentProject && (
-        <div className="current-section" onClick={rotateManually}>
-          <div className="current-label">Current Project</div>
-          <div className="current-value">{currentProject.name}</div>
-          <div className="current-indicator">
-            {currentProjectIndex + 1} of {projects.length} • {formatTime(getProjectTotalTime(currentProject))}
-          </div>
-        </div>
-      )}
+      {currentView === "main" ? (
+        <>
+          {currentProject && (
+            <div className="current-section" onClick={rotateManually}>
+              <div className="current-label">Current Project</div>
+              <div className="current-value">{currentProject.name}</div>
+              <div className="current-indicator">
+                {currentProjectIndex + 1} of {projects.length} • {formatTime(getProjectTotalTime(currentProject))}
+              </div>
+            </div>
+          )}
 
-      <form onSubmit={addProject} className="add-form">
-        <input
-          type="text"
-          value={newProjectName}
-          onChange={(e) => setNewProjectName(e.target.value)}
-          placeholder="Add new project..."
-          className="add-input"
-        />
-        <button type="submit" className="add-btn">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <line x1="12" y1="5" x2="12" y2="19"></line>
-            <line x1="5" y1="12" x2="19" y2="12"></line>
-          </svg>
-        </button>
-      </form>
+          <form onSubmit={addProject} className="add-form">
+            <input
+              type="text"
+              value={newProjectName}
+              onChange={(e) => setNewProjectName(e.target.value)}
+              placeholder="Add new project..."
+              className="add-input"
+            />
+            <button type="submit" className="add-btn">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+            </button>
+          </form>
 
-      <div className="items-container">
+          <div className="items-container">
         {projects.length === 0 ? (
           <div className="empty-state">
             <div className="empty-icon">
@@ -338,9 +411,74 @@ function App() {
         )}
       </div>
 
-      <footer className="footer">
-        <span>Click project or press {HOTKEY.replace("CommandOrControl", "⌘")} to rotate</span>
-      </footer>
+          <footer className="footer">
+            <span>Click project or press {HOTKEY.replace("CommandOrControl", "⌘")} to rotate</span>
+          </footer>
+        </>
+      ) : (
+        <div className="donate-view">
+          <div className="donate-section">
+            <h2>Enable Ads</h2>
+            <p className="donate-description">
+              Support development by enabling banner ads in the app.
+            </p>
+            <div className="ads-toggle-container">
+              <button
+                className={`ads-toggle ${adsEnabled ? "enabled" : ""}`}
+                onClick={toggleAds}
+              >
+                <span className="toggle-track">
+                  <span className="toggle-thumb"></span>
+                </span>
+                <span className="toggle-label">{adsEnabled ? "Ads Enabled" : "Ads Disabled"}</span>
+              </button>
+            </div>
+            {adsEnabled && (
+              <div className="ad-preview">
+                {adLoading ? (
+                  <div className="ad-banner-preview ad-loading">
+                    <span className="ad-text">Loading ad...</span>
+                  </div>
+                ) : adData ? (
+                  <a
+                    href={adData.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="ad-banner-link"
+                  >
+                    <img
+                      src={getAdImageUrl(adData.imagePath)}
+                      alt="Advertisement"
+                      className="ad-banner-image"
+                      width={AD_WIDTH}
+                      height={AD_HEIGHT}
+                    />
+                  </a>
+                ) : (
+                  <div className="ad-banner-preview ad-error">
+                    <span className="ad-label">AD</span>
+                    <span className="ad-text">No ad available</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="donate-section">
+            <h2>Donate</h2>
+            <p className="donate-description">
+              Support the project directly through donation.
+            </p>
+            <div className="donate-iframe-container">
+              <iframe
+                src="https://the-ihor.com/donate"
+                title="Donate"
+                className="donate-iframe"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
