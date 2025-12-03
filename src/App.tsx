@@ -147,47 +147,45 @@ function App() {
           const [index] = await invoke<[number, Project | null]>("rotate_project");
           setCurrentProjectIndex(index);
           const loadedProjects = await invoke<Project[]>("get_projects");
-          const project = loadedProjects[index];
-          if (project) {
-            setProjects(loadedProjects);
-            // Auto-start tracking current task
-            const task = project.tasks[project.current_task_index];
-            if (task) {
-              const tracking = await invoke<ActiveTracking | null>("start_tracking", {
-                projectId: project.id,
-                taskId: task.id,
-              });
-              setActiveTracking(tracking);
-              if (tracking) setElapsedTime(0);
-            }
-          }
+          setProjects(loadedProjects);
         }
       });
       await register(hotkeySettings.taskHotkey, async (event) => {
         if (event.state === "Pressed") {
-          const task = await invoke<Task | null>("rotate_task");
-          if (task) {
-            const loadedProjects = await invoke<Project[]>("get_projects");
-            setProjects(loadedProjects);
-            const currentIdx = await invoke<number>("get_current_project_index");
-            const project = loadedProjects[currentIdx];
-            if (project) {
-              const tracking = await invoke<ActiveTracking | null>("start_tracking", {
-                projectId: project.id,
-                taskId: task.id,
-              });
-              setActiveTracking(tracking);
-              if (tracking) setElapsedTime(0);
-            }
-          }
+          await invoke<Task | null>("rotate_task");
+          const loadedProjects = await invoke<Project[]>("get_projects");
+          setProjects(loadedProjects);
         }
       });
       await register(hotkeySettings.stopHotkey, async (event) => {
         if (event.state === "Pressed") {
-          await invoke<number | null>("stop_tracking");
-          setActiveTracking(null);
-          const loadedProjects = await invoke<Project[]>("get_projects");
-          setProjects(loadedProjects);
+          const currentTracking = await invoke<ActiveTracking | null>("get_active_tracking");
+          if (currentTracking) {
+            await invoke<number | null>("stop_tracking");
+            setActiveTracking(null);
+            const loadedProjects = await invoke<Project[]>("get_projects");
+            setProjects(loadedProjects);
+          } else {
+            // Start tracking current task
+            const loadedProjects = await invoke<Project[]>("get_projects");
+            const currentIdx = await invoke<number>("get_current_project_index");
+            const project = loadedProjects[currentIdx];
+            if (project) {
+              const activeTasks = project.tasks.filter(t => t.done_at === null);
+              const currentTask = activeTasks.length > 0
+                ? activeTasks[project.current_task_index % activeTasks.length]
+                : null;
+              if (currentTask) {
+                const tracking = await invoke<ActiveTracking | null>("start_tracking", {
+                  projectId: project.id,
+                  taskId: currentTask.id,
+                });
+                setActiveTracking(tracking);
+                if (tracking) setElapsedTime(0);
+              }
+            }
+            setProjects(loadedProjects);
+          }
         }
       });
       setHotkeyRegistered(true);
@@ -376,26 +374,17 @@ function App() {
   };
 
   const rotateTask = async () => {
-    const task = await invoke<Task | null>("rotate_task");
-    if (task) {
-      const loadedProjects = await invoke<Project[]>("get_projects");
-      setProjects(loadedProjects);
-      const currentIdx = await invoke<number>("get_current_project_index");
-      const project = loadedProjects[currentIdx];
-      if (project) {
-        const tracking = await invoke<ActiveTracking | null>("start_tracking", {
-          projectId: project.id,
-          taskId: task.id,
-        });
-        setActiveTracking(tracking);
-        if (tracking) setElapsedTime(0);
-      }
-    }
+    await invoke<Task | null>("rotate_task");
+    const loadedProjects = await invoke<Project[]>("get_projects");
+    setProjects(loadedProjects);
   };
 
   const selectProject = async (index: number) => {
     await invoke<number>("set_current_project", { index });
-    setCurrentProjectIndex(index);
+    const loadedProjects = await invoke<Project[]>("get_projects");
+    const currentIdx = await invoke<number>("get_current_project_index");
+    setProjects(loadedProjects);
+    setCurrentProjectIndex(currentIdx);
   };
 
   const getTaskTime = (task: Task): number => {
@@ -652,6 +641,7 @@ function App() {
         <>
           {currentProject && (
             <div className="current-section" onClick={rotateManually}>
+              <span className="hotkey-badge">{formatHotkeyShort(hotkeySettings.projectHotkey)}</span>
               <div className="current-label">Current Project</div>
               <div className="current-value">{currentProject.name}</div>
               <div className="current-indicator">
@@ -670,6 +660,7 @@ function App() {
             return (
               <>
                 <div className="current-section task-section" onClick={rotateTask}>
+                  <span className="hotkey-badge">{formatHotkeyShort(hotkeySettings.taskHotkey)}</span>
                   <div className="current-label">Current Task</div>
                   <div className="current-value">{currentTask.name}</div>
                   <div className="current-indicator">
@@ -692,6 +683,7 @@ function App() {
                     )}
                   </button>
                   <span className="session-time">{isTracking ? formatTime(elapsedTime) : "00:00:00"}</span>
+                  <span className="hotkey-badge stop-hotkey">{formatHotkeyShort(hotkeySettings.stopHotkey)}</span>
                 </div>
               </>
             );
@@ -815,15 +807,21 @@ function App() {
                       <div className="no-tasks">No tasks yet</div>
                     ) : (
                       <ul className="tasks-list">
-                        {[...project.tasks].sort((a, b) => {
-                          const aDone = a.done_at !== null ? 1 : 0;
-                          const bDone = b.done_at !== null ? 1 : 0;
-                          return aDone - bDone;
-                        }).map((task) => {
-                          const isTracking = activeTracking?.project_id === project.id && activeTracking?.task_id === task.id;
-                          const isDone = task.done_at !== null;
-                          return (
-                            <li key={task.id} className={`task-item ${isTracking ? "tracking" : ""} ${isDone ? "done" : ""}`}>
+                        {(() => {
+                          const activeTasks = project.tasks.filter(t => t.done_at === null);
+                          const currentTaskId = activeTasks.length > 0
+                            ? activeTasks[project.current_task_index % activeTasks.length]?.id
+                            : null;
+                          return [...project.tasks].sort((a, b) => {
+                            const aDone = a.done_at !== null ? 1 : 0;
+                            const bDone = b.done_at !== null ? 1 : 0;
+                            return aDone - bDone;
+                          }).map((task) => {
+                            const isTracking = activeTracking?.project_id === project.id && activeTracking?.task_id === task.id;
+                            const isDone = task.done_at !== null;
+                            const isSelected = task.id === currentTaskId && index === currentProjectIndex;
+                            return (
+                              <li key={task.id} className={`task-item ${isTracking ? "tracking" : ""} ${isDone ? "done" : ""} ${isSelected ? "selected" : ""}`}>
                               <button
                                 className={`done-checkbox ${isDone ? "checked" : ""}`}
                                 onClick={() => toggleTaskDone(project.id, task.id, !isDone)}
@@ -892,8 +890,9 @@ function App() {
                                 )}
                               </button>
                             </li>
-                          );
-                        })}
+                            );
+                          });
+                        })()}
                       </ul>
                     )}
                   </div>
@@ -904,7 +903,7 @@ function App() {
       </div>
 
           <footer className="footer">
-            <span>{formatHotkeyShort(hotkeySettings.projectHotkey)} project • {formatHotkeyShort(hotkeySettings.taskHotkey)} task • {formatHotkeyShort(hotkeySettings.stopHotkey)} stop</span>
+            <span>{formatHotkeyShort(hotkeySettings.projectHotkey)} project • {formatHotkeyShort(hotkeySettings.taskHotkey)} task • {formatHotkeyShort(hotkeySettings.stopHotkey)} toggle</span>
           </footer>
         </>
       ) : currentView === "donate" ? (
@@ -1010,8 +1009,8 @@ function App() {
               </div>
               <div className="hotkey-item">
                 <div className="hotkey-info">
-                  <span className="hotkey-label">Stop Timer</span>
-                  <span className="hotkey-description">Stop the current timer</span>
+                  <span className="hotkey-label">Toggle Timer</span>
+                  <span className="hotkey-description">Start or stop the current timer</span>
                 </div>
                 <input
                   type="text"

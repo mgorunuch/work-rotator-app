@@ -367,11 +367,17 @@ fn rotate_project(state: State<AppState>) -> (usize, Option<Project>) {
 
 #[tauri::command]
 fn set_current_project(index: usize, state: State<AppState>) -> usize {
-    let projects = state.projects.lock().unwrap();
+    let mut projects = state.projects.lock().unwrap();
     let mut current = state.current_project_index.lock().unwrap();
     let db = state.db.lock().unwrap();
 
-    if index < projects.len() {
+    if index < projects.len() && index > 0 {
+        // Move selected project to top
+        let project = projects.remove(index);
+        projects.insert(0, project);
+        *current = 0;
+        save_current_project_index(&db, *current);
+    } else if index < projects.len() {
         *current = index;
         save_current_project_index(&db, *current);
     }

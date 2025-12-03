@@ -172,6 +172,32 @@ body {
   height: 20px;
 }
 
+.hotkey-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.current-section {
+  position: relative;
+}
+
+.tracking-controls {
+  position: relative;
+}
+
+.tracking-controls .hotkey-badge {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
 .current-label {
   font-size: 0.75rem;
   text-transform: uppercase;
@@ -519,6 +545,16 @@ body {
 .task-item.done .task-name {
   text-decoration: line-through;
   color: var(--text-muted);
+}
+
+.task-item.selected {
+  background: rgba(139, 92, 246, 0.15);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+}
+
+.task-item.selected .task-name {
+  color: var(--text-primary);
+  font-weight: 500;
 }
 
 .done-checkbox {
