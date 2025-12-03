@@ -24,6 +24,7 @@ interface Task {
   id: number;
   name: string;
   time_seconds: number;
+  done_at: number | null;
 }
 
 interface Project {
@@ -62,6 +63,22 @@ interface ProjectTimeStats {
   project_id: number;
   project_name: string;
   total_seconds: number;
+}
+
+interface TaskWithStatus {
+  id: number;
+  name: string;
+  time_seconds: number;
+  archived_at: number | null;
+  done_at: number | null;
+}
+
+interface ProjectWithStatus {
+  id: number;
+  name: string;
+  tasks: TaskWithStatus[];
+  current_task_index: number;
+  archived_at: number | null;
 }
 
 const formatTime = (seconds: number): string => {
@@ -112,6 +129,7 @@ function App() {
   const [hourlyActivity, setHourlyActivity] = useState<HourlyActivity[]>([]);
   const [dailyActivity, setDailyActivity] = useState<DailyActivity[]>([]);
   const [projectStats, setProjectStats] = useState<ProjectTimeStats[]>([]);
+  const [allProjectsWithStatus, setAllProjectsWithStatus] = useState<ProjectWithStatus[]>([]);
 
   const loadData = useCallback(async () => {
     const loadedProjects = await invoke<Project[]>("get_projects");
@@ -330,6 +348,13 @@ function App() {
     setActiveTracking(tracking);
   };
 
+  const toggleTaskDone = async (projectId: number, taskId: number, done: boolean) => {
+    const updated = await invoke<Project | null>("toggle_task_done", { projectId, taskId, done });
+    if (updated) {
+      setProjects(projects.map(p => p.id === projectId ? updated : p));
+    }
+  };
+
   const startTracking = async (projectId: number, taskId: number) => {
     const tracking = await invoke<ActiveTracking | null>("start_tracking", { projectId, taskId });
     setActiveTracking(tracking);
@@ -468,16 +493,46 @@ function App() {
     }
   };
 
+  const restoreProject = async (projectId: number) => {
+    const updated = await invoke<Project[]>("restore_project", { projectId });
+    setProjects(updated);
+    const allProjects = await invoke<ProjectWithStatus[]>("get_all_projects_with_status");
+    setAllProjectsWithStatus(allProjects);
+  };
+
+  const restoreTask = async (projectId: number, taskId: number) => {
+    const updated = await invoke<Project | null>("restore_task", { projectId, taskId });
+    if (updated) {
+      setProjects(projects.map(p => p.id === projectId ? updated : p));
+    }
+    const allProjects = await invoke<ProjectWithStatus[]>("get_all_projects_with_status");
+    setAllProjectsWithStatus(allProjects);
+  };
+
+  const deleteTaskPermanent = async (taskId: number) => {
+    await invoke<boolean>("delete_task_permanent", { taskId });
+    const allProjects = await invoke<ProjectWithStatus[]>("get_all_projects_with_status");
+    setAllProjectsWithStatus(allProjects);
+  };
+
+  const deleteProjectPermanent = async (projectId: number) => {
+    await invoke<boolean>("delete_project_permanent", { projectId });
+    const allProjects = await invoke<ProjectWithStatus[]>("get_all_projects_with_status");
+    setAllProjectsWithStatus(allProjects);
+  };
+
   const loadDatabaseData = useCallback(async () => {
     const [startTime, endTime] = getTimeRangeTimestamps(dbTimeRange);
-    const [hourly, daily, stats] = await Promise.all([
+    const [hourly, daily, stats, allProjects] = await Promise.all([
       invoke<HourlyActivity[]>("get_hourly_activity", { startTime, endTime }),
       invoke<DailyActivity[]>("get_daily_activity", { startTime, endTime }),
       invoke<ProjectTimeStats[]>("get_project_time_stats", { startTime, endTime }),
+      invoke<ProjectWithStatus[]>("get_all_projects_with_status"),
     ]);
     setHourlyActivity(hourly);
     setDailyActivity(daily);
     setProjectStats(stats);
+    setAllProjectsWithStatus(allProjects);
   }, [dbTimeRange]);
 
   useEffect(() => {
@@ -654,7 +709,7 @@ function App() {
                           className="dropdown-item danger"
                           onSelect={() => removeProject(project.id)}
                         >
-                          Delete
+                          Archive
                         </DropdownMenu.Item>
                       </DropdownMenu.Content>
                     </DropdownMenu.Portal>
@@ -707,8 +762,19 @@ function App() {
                       <ul className="tasks-list">
                         {project.tasks.map((task) => {
                           const isTracking = activeTracking?.project_id === project.id && activeTracking?.task_id === task.id;
+                          const isDone = task.done_at !== null;
                           return (
-                            <li key={task.id} className={`task-item ${isTracking ? "tracking" : ""}`}>
+                            <li key={task.id} className={`task-item ${isTracking ? "tracking" : ""} ${isDone ? "done" : ""}`}>
+                              <button
+                                className={`done-checkbox ${isDone ? "checked" : ""}`}
+                                onClick={() => toggleTaskDone(project.id, task.id, !isDone)}
+                              >
+                                {isDone && (
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                                    <polyline points="20 6 9 17 4 12"></polyline>
+                                  </svg>
+                                )}
+                              </button>
                               <DropdownMenu.Root>
                                 <DropdownMenu.Trigger asChild>
                                   <button className="dots-btn small">
@@ -731,7 +797,7 @@ function App() {
                                       className="dropdown-item danger"
                                       onSelect={() => removeTask(project.id, task.id)}
                                     >
-                                      Delete
+                                      Archive
                                     </DropdownMenu.Item>
                                   </DropdownMenu.Content>
                                 </DropdownMenu.Portal>
@@ -1046,6 +1112,66 @@ function App() {
                 <span>More</span>
               </div>
             </div>
+          </div>
+
+          <div className="db-section">
+            <h3>All Projects & Tasks</h3>
+            {allProjectsWithStatus.length === 0 ? (
+              <div className="no-data">No projects yet</div>
+            ) : (
+              <div className="all-projects-list">
+                {allProjectsWithStatus.map(project => {
+                  const isProjectArchived = project.archived_at !== null;
+                  return (
+                    <div key={project.id} className={`db-project ${isProjectArchived ? "archived" : ""}`}>
+                      <div className="db-project-header">
+                        <div className="db-project-info">
+                          <span className="db-project-name">{project.name}</span>
+                          {isProjectArchived && <span className="status-badge archived">Archived</span>}
+                          <span className="db-project-time">{formatTime(project.tasks.reduce((sum, t) => sum + t.time_seconds, 0))}</span>
+                        </div>
+                        {isProjectArchived && (
+                          <div className="db-project-actions">
+                            <button className="restore-btn" onClick={() => restoreProject(project.id)}>
+                              Restore
+                            </button>
+                            <button className="delete-btn" onClick={() => deleteProjectPermanent(project.id)}>
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      {project.tasks.length > 0 && (
+                        <div className="db-tasks">
+                          {project.tasks.map(task => {
+                            const isTaskArchived = task.archived_at !== null;
+                            return (
+                              <div key={task.id} className={`db-task ${isTaskArchived ? "archived" : ""}`}>
+                                <div className="db-task-info">
+                                  <span className="db-task-name">{task.name}</span>
+                                  {isTaskArchived && <span className="status-badge archived small">Archived</span>}
+                                  <span className="db-task-time">{formatTime(task.time_seconds)}</span>
+                                </div>
+                                {isTaskArchived && (
+                                  <div className="db-task-actions">
+                                    <button className="restore-btn small" onClick={() => restoreTask(project.id, task.id)}>
+                                      Restore
+                                    </button>
+                                    <button className="delete-btn small" onClick={() => deleteTaskPermanent(task.id)}>
+                                      Delete
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       ) : null}

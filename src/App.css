@@ -467,6 +467,43 @@ body {
   animation: pulse 2s infinite;
 }
 
+.task-item.done {
+  opacity: 0.6;
+}
+
+.task-item.done .task-name {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.done-checkbox {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  border: 2px solid var(--text-muted);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  padding: 0;
+}
+
+.done-checkbox:hover {
+  border-color: var(--accent);
+}
+
+.done-checkbox.checked {
+  background: var(--success);
+  border-color: var(--success);
+}
+
+.done-checkbox.checked svg {
+  color: white;
+}
+
 @keyframes pulse {
   0%, 100% {
     box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.2);
@@ -1080,5 +1117,162 @@ body {
   .activity-cell.level-0 {
     background: #ebedf0;
   }
+}
+
+/* All Projects List in Database View */
+.all-projects-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.db-project {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.db-project.archived {
+  opacity: 0.7;
+}
+
+.db-project-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.db-project-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.db-project-name {
+  flex: 1;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.db-project.archived .db-project-name {
+  color: var(--text-secondary);
+}
+
+.db-project-time {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.status-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-badge.archived {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+
+.status-badge.small {
+  padding: 1px 6px;
+  font-size: 0.6rem;
+}
+
+.db-project-actions,
+.db-task-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.restore-btn {
+  padding: 6px 12px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.restore-btn:hover {
+  background: var(--accent-hover);
+}
+
+.restore-btn.small {
+  padding: 4px 8px;
+  font-size: 0.65rem;
+}
+
+.delete-btn {
+  padding: 6px 12px;
+  background: var(--danger);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.delete-btn:hover {
+  background: var(--danger-hover);
+}
+
+.delete-btn.small {
+  padding: 4px 8px;
+  font-size: 0.65rem;
+}
+
+.db-tasks {
+  padding: 8px 14px 12px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+}
+
+.db-task {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0;
+}
+
+.db-task:not(:last-child) {
+  border-bottom: 1px solid var(--border);
+}
+
+.db-task.archived {
+  opacity: 0.6;
+}
+
+.db-task-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.db-task-name {
+  flex: 1;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.db-task.archived .db-task-name {
+  color: var(--text-muted);
+}
+
+.db-task-time {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 

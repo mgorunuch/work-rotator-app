@@ -14,6 +14,7 @@ struct Task {
     id: u64,
     name: String,
     time_seconds: u64,
+    done_at: Option<u64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -82,7 +83,8 @@ fn init_db(conn: &Connection) {
         "CREATE TABLE IF NOT EXISTS projects (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
-            current_task_index INTEGER NOT NULL DEFAULT 0
+            current_task_index INTEGER NOT NULL DEFAULT 0,
+            archived INTEGER NOT NULL DEFAULT 0
         )",
         [],
     ).expect("Failed to create projects table");
@@ -93,10 +95,64 @@ fn init_db(conn: &Connection) {
             project_id INTEGER NOT NULL,
             name TEXT NOT NULL,
             time_seconds INTEGER NOT NULL DEFAULT 0,
+            archived INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         )",
         [],
     ).expect("Failed to create tasks table");
+
+    // Migration: Add archived column if it doesn't exist
+    conn.execute(
+        "ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+        [],
+    ).ok();
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+        [],
+    ).ok();
+
+    // Migration: Add done column if it doesn't exist (legacy boolean)
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN done INTEGER NOT NULL DEFAULT 0",
+        [],
+    ).ok();
+
+    // Migration: Add done_at timestamp column (replaces done boolean)
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN done_at INTEGER",
+        [],
+    ).ok();
+
+    // Migration: Add archived_at timestamp column for tasks (replaces archived boolean)
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN archived_at INTEGER",
+        [],
+    ).ok();
+
+    // Migration: Add archived_at timestamp column for projects (replaces archived boolean)
+    conn.execute(
+        "ALTER TABLE projects ADD COLUMN archived_at INTEGER",
+        [],
+    ).ok();
+
+    // Migrate legacy boolean done to done_at timestamp
+    let now = now_seconds();
+    conn.execute(
+        "UPDATE tasks SET done_at = ? WHERE done = 1 AND done_at IS NULL",
+        params![now],
+    ).ok();
+
+    // Migrate legacy boolean archived to archived_at timestamp for tasks
+    conn.execute(
+        "UPDATE tasks SET archived_at = ? WHERE archived = 1 AND archived_at IS NULL",
+        params![now],
+    ).ok();
+
+    // Migrate legacy boolean archived to archived_at timestamp for projects
+    conn.execute(
+        "UPDATE projects SET archived_at = ? WHERE archived = 1 AND archived_at IS NULL",
+        params![now],
+    ).ok();
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS app_state (
@@ -132,7 +188,7 @@ fn init_db(conn: &Connection) {
 }
 
 fn load_projects(conn: &Connection) -> Vec<Project> {
-    let mut stmt = conn.prepare("SELECT id, name, current_task_index FROM projects ORDER BY id").unwrap();
+    let mut stmt = conn.prepare("SELECT id, name, current_task_index FROM projects WHERE archived_at IS NULL ORDER BY id").unwrap();
     let project_iter = stmt.query_map([], |row| {
         Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?, row.get::<_, usize>(2)?))
     }).unwrap();
@@ -146,13 +202,27 @@ fn load_projects(conn: &Connection) -> Vec<Project> {
     projects
 }
 
+const DONE_HIDE_AFTER_SECONDS: u64 = 5 * 60 * 60; // 5 hours
+
 fn load_tasks(conn: &Connection, project_id: u64) -> Vec<Task> {
-    let mut stmt = conn.prepare("SELECT id, name, time_seconds FROM tasks WHERE project_id = ? ORDER BY id").unwrap();
-    let task_iter = stmt.query_map([project_id], |row| {
+    let now = now_seconds();
+    let cutoff = now.saturating_sub(DONE_HIDE_AFTER_SECONDS);
+
+    // Load tasks that are:
+    // - not archived (archived_at IS NULL)
+    // - either not done (done_at IS NULL) OR done recently (done_at > cutoff)
+    let mut stmt = conn.prepare(
+        "SELECT id, name, time_seconds, done_at FROM tasks
+         WHERE project_id = ? AND archived_at IS NULL
+         AND (done_at IS NULL OR done_at > ?)
+         ORDER BY id"
+    ).unwrap();
+    let task_iter = stmt.query_map(params![project_id, cutoff], |row| {
         Ok(Task {
             id: row.get(0)?,
             name: row.get(1)?,
             time_seconds: row.get(2)?,
+            done_at: row.get(3)?,
         })
     }).unwrap();
 
@@ -265,8 +335,10 @@ fn remove_project(project_id: u64, state: State<AppState>) -> Vec<Project> {
             }
         }
 
-        db.execute("DELETE FROM tasks WHERE project_id = ?", [project_id]).ok();
-        db.execute("DELETE FROM projects WHERE id = ?", [project_id]).ok();
+        // Archive instead of delete - set archived_at to current timestamp
+        let now = now_seconds();
+        db.execute("UPDATE tasks SET archived_at = ? WHERE project_id = ?", params![now, project_id]).ok();
+        db.execute("UPDATE projects SET archived_at = ? WHERE id = ?", params![now, project_id]).ok();
 
         projects.remove(pos);
         if *current >= projects.len() && !projects.is_empty() {
@@ -322,14 +394,24 @@ fn rotate_task(state: State<AppState>) -> Option<Task> {
         return None;
     }
 
-    project.current_task_index = (project.current_task_index + 1) % project.tasks.len();
+    // Find the next non-done task
+    let task_count = project.tasks.len();
+    let start_index = project.current_task_index;
 
-    db.execute(
-        "UPDATE projects SET current_task_index = ? WHERE id = ?",
-        params![project.current_task_index, project.id],
-    ).ok();
+    for i in 1..=task_count {
+        let next_index = (start_index + i) % task_count;
+        if project.tasks[next_index].done_at.is_none() {
+            project.current_task_index = next_index;
+            db.execute(
+                "UPDATE projects SET current_task_index = ? WHERE id = ?",
+                params![project.current_task_index, project.id],
+            ).ok();
+            return Some(project.tasks[project.current_task_index].clone());
+        }
+    }
 
-    Some(project.tasks[project.current_task_index].clone())
+    // All tasks are done, return None
+    None
 }
 
 #[tauri::command]
@@ -343,10 +425,11 @@ fn add_task(project_id: u64, name: String, state: State<AppState>) -> Option<Pro
             id: *next_task_id,
             name: name.clone(),
             time_seconds: 0,
+            done_at: None,
         };
 
         db.execute(
-            "INSERT INTO tasks (id, project_id, name, time_seconds) VALUES (?, ?, ?, 0)",
+            "INSERT INTO tasks (id, project_id, name, time_seconds, done_at) VALUES (?, ?, ?, 0, NULL)",
             params![*next_task_id, project_id, name],
         ).ok();
 
@@ -373,7 +456,9 @@ fn remove_task(project_id: u64, task_id: u64, state: State<AppState>) -> Option<
         }
 
         if let Some(pos) = project.tasks.iter().position(|t| t.id == task_id) {
-            db.execute("DELETE FROM tasks WHERE id = ?", [task_id]).ok();
+            // Archive instead of delete - set archived_at to current timestamp
+            let now = now_seconds();
+            db.execute("UPDATE tasks SET archived_at = ? WHERE id = ?", params![now, task_id]).ok();
 
             project.tasks.remove(pos);
             if project.current_task_index >= project.tasks.len() && !project.tasks.is_empty() {
@@ -685,6 +770,152 @@ fn update_tray_title(app: AppHandle, title: String) -> Result<(), String> {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct ProjectWithStatus {
+    id: u64,
+    name: String,
+    tasks: Vec<TaskWithStatus>,
+    current_task_index: usize,
+    archived_at: Option<u64>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct TaskWithStatus {
+    id: u64,
+    name: String,
+    time_seconds: u64,
+    archived_at: Option<u64>,
+    done_at: Option<u64>,
+}
+
+#[tauri::command]
+fn get_all_projects_with_status(state: State<AppState>) -> Vec<ProjectWithStatus> {
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare("SELECT id, name, current_task_index, archived_at FROM projects ORDER BY archived_at IS NOT NULL, id").unwrap();
+    let project_iter = stmt.query_map([], |row| {
+        Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?, row.get::<_, usize>(2)?, row.get::<_, Option<u64>>(3)?))
+    }).unwrap();
+
+    let mut projects = Vec::new();
+    for project_result in project_iter {
+        let (id, name, current_task_index, archived_at) = project_result.unwrap();
+        // Load all tasks for this project
+        let mut task_stmt = db.prepare("SELECT id, name, time_seconds, archived_at, done_at FROM tasks WHERE project_id = ? ORDER BY archived_at IS NOT NULL, id").unwrap();
+        let task_iter = task_stmt.query_map([id], |row| {
+            Ok(TaskWithStatus {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                time_seconds: row.get(2)?,
+                archived_at: row.get(3)?,
+                done_at: row.get(4)?,
+            })
+        }).unwrap();
+        let tasks: Vec<TaskWithStatus> = task_iter.filter_map(|t| t.ok()).collect();
+        projects.push(ProjectWithStatus { id, name, tasks, current_task_index, archived_at });
+    }
+    projects
+}
+
+#[tauri::command]
+fn restore_project(project_id: u64, state: State<AppState>) -> Vec<Project> {
+    let mut projects = state.projects.lock().unwrap();
+    let db = state.db.lock().unwrap();
+
+    // Restore project and its tasks - set archived_at to NULL
+    db.execute("UPDATE projects SET archived_at = NULL WHERE id = ?", [project_id]).ok();
+    db.execute("UPDATE tasks SET archived_at = NULL WHERE project_id = ?", [project_id]).ok();
+
+    // Reload the project
+    let mut stmt = db.prepare("SELECT id, name, current_task_index FROM projects WHERE id = ?").unwrap();
+    if let Ok((id, name, current_task_index)) = stmt.query_row([project_id], |row| {
+        Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?, row.get::<_, usize>(2)?))
+    }) {
+        let tasks = load_tasks(&db, id);
+        projects.push(Project { id, name, tasks, current_task_index });
+    }
+
+    projects.clone()
+}
+
+#[tauri::command]
+fn restore_task(project_id: u64, task_id: u64, state: State<AppState>) -> Option<Project> {
+    let mut projects = state.projects.lock().unwrap();
+    let db = state.db.lock().unwrap();
+
+    // Restore the task - set archived_at to NULL
+    db.execute("UPDATE tasks SET archived_at = NULL WHERE id = ?", [task_id]).ok();
+
+    // Find the project and reload its tasks
+    if let Some(project) = projects.iter_mut().find(|p| p.id == project_id) {
+        let mut stmt = db.prepare("SELECT id, name, time_seconds, done_at FROM tasks WHERE id = ?").unwrap();
+        if let Ok(task) = stmt.query_row([task_id], |row| {
+            Ok(Task {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                time_seconds: row.get(2)?,
+                done_at: row.get(3)?,
+            })
+        }) {
+            project.tasks.push(task);
+        }
+        return Some(project.clone());
+    }
+
+    None
+}
+
+#[tauri::command]
+fn toggle_task_done(project_id: u64, task_id: u64, done: bool, state: State<AppState>) -> Option<Project> {
+    let mut projects = state.projects.lock().unwrap();
+    let db = state.db.lock().unwrap();
+
+    let done_at = if done { Some(now_seconds()) } else { None };
+
+    if done {
+        db.execute(
+            "UPDATE tasks SET done_at = ? WHERE id = ?",
+            params![done_at, task_id],
+        ).ok();
+    } else {
+        db.execute(
+            "UPDATE tasks SET done_at = NULL WHERE id = ?",
+            params![task_id],
+        ).ok();
+    }
+
+    if let Some(project) = projects.iter_mut().find(|p| p.id == project_id) {
+        if let Some(task) = project.tasks.iter_mut().find(|t| t.id == task_id) {
+            task.done_at = done_at;
+        }
+        return Some(project.clone());
+    }
+
+    None
+}
+
+#[tauri::command]
+fn delete_task_permanent(task_id: u64, state: State<AppState>) -> bool {
+    let db = state.db.lock().unwrap();
+
+    // Permanently delete the task and its time entries
+    db.execute("DELETE FROM time_entries WHERE task_id = ?", [task_id]).ok();
+    db.execute("DELETE FROM tasks WHERE id = ?", [task_id]).ok();
+
+    true
+}
+
+#[tauri::command]
+fn delete_project_permanent(project_id: u64, state: State<AppState>) -> bool {
+    let db = state.db.lock().unwrap();
+
+    // Permanently delete the project, its tasks, and time entries
+    db.execute("DELETE FROM time_entries WHERE project_id = ?", [project_id]).ok();
+    db.execute("DELETE FROM tasks WHERE project_id = ?", [project_id]).ok();
+    db.execute("DELETE FROM projects WHERE id = ?", [project_id]).ok();
+
+    true
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let db_path = get_db_path();
@@ -764,7 +995,13 @@ pub fn run() {
             get_daily_activity,
             get_project_time_stats,
             get_all_time_entries,
-            update_tray_title
+            update_tray_title,
+            get_all_projects_with_status,
+            restore_project,
+            restore_task,
+            toggle_task_done,
+            delete_task_permanent,
+            delete_project_permanent
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
