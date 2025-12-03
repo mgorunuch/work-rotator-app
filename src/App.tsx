@@ -1,8 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
+import { fetch } from "@tauri-apps/plugin-http";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
+import * as XLSX from "xlsx";
 import "./App.css";
+
+const API_BASE_URL = "https://the-ihor.com"; // swap to "http://localhost:3000" for local testing
 
 const DEFAULT_HOTKEY_PROJECT = "CommandOrControl+Shift+P";
 const DEFAULT_HOTKEY_TASK = "CommandOrControl+Shift+O";
@@ -33,6 +39,31 @@ interface ActiveTracking {
   started_at: number;
 }
 
+interface TimeEntry {
+  id: number;
+  project_id: number;
+  task_id: number;
+  start_time: number;
+  end_time: number;
+  duration_seconds: number;
+}
+
+interface HourlyActivity {
+  hour: number;
+  total_seconds: number;
+}
+
+interface DailyActivity {
+  date: string;
+  total_seconds: number;
+}
+
+interface ProjectTimeStats {
+  project_id: number;
+  project_name: string;
+  total_seconds: number;
+}
+
 const formatTime = (seconds: number): string => {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -42,7 +73,8 @@ const formatTime = (seconds: number): string => {
   return `${s}s`;
 };
 
-type View = "main" | "donate" | "settings";
+type View = "main" | "donate" | "settings" | "database";
+type TimeRange = "1d" | "3d" | "7d" | "1m";
 
 interface AdData {
   url: string;
@@ -56,7 +88,7 @@ function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProjectIndex, setCurrentProjectIndex] = useState(0);
   const [newProjectName, setNewProjectName] = useState("");
-  const [newTaskName, setNewTaskName] = useState("");
+  const [newTaskNames, setNewTaskNames] = useState<Record<number, string>>({});
   const [_hotkeyRegistered, setHotkeyRegistered] = useState(false);
   const [activeTracking, setActiveTracking] = useState<ActiveTracking | null>(null);
   const [elapsedTime, setElapsedTime] = useState(0);
@@ -75,8 +107,11 @@ function App() {
   const [recordingHotkey, setRecordingHotkey] = useState<"project" | "task" | "stop" | null>(null);
   const currentProject = projects[currentProjectIndex] || null;
   const projectInputRef = useRef<HTMLInputElement>(null);
-  const taskInputRef = useRef<HTMLInputElement>(null);
   const [editing, setEditing] = useState<{ type: "project" | "task"; id: number; value: string } | null>(null);
+  const [dbTimeRange, setDbTimeRange] = useState<TimeRange>("7d");
+  const [hourlyActivity, setHourlyActivity] = useState<HourlyActivity[]>([]);
+  const [dailyActivity, setDailyActivity] = useState<DailyActivity[]>([]);
+  const [projectStats, setProjectStats] = useState<ProjectTimeStats[]>([]);
 
   const loadData = useCallback(async () => {
     const loadedProjects = await invoke<Project[]>("get_projects");
@@ -216,7 +251,7 @@ function App() {
     const fetchAd = async () => {
       setAdLoading(true);
       try {
-        const response = await fetch("https://the-ihor.com/ads/rotator");
+        const response = await fetch(`${API_BASE_URL}/api/ads/rotator`);
         if (response.ok) {
           const data: AdData = await response.json();
           setAdData(data);
@@ -230,6 +265,28 @@ function App() {
 
     fetchAd();
   }, [adsEnabled]);
+
+  // Handle iframe postMessage events
+  useEffect(() => {
+    const handleMessage = async (event: MessageEvent) => {
+      // Validate origin
+      if (!event.origin.includes("the-ihor.com") && !event.origin.includes("localhost")) {
+        return;
+      }
+
+      const { source, type, url } = event.data || {};
+
+      if (source !== "support-iframe") return;
+
+      if (type === "openLink" && url) {
+        await openUrl(url);
+      }
+      // 'copied' type - clipboard already handled by iframe
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
 
   const getAdImageUrl = (imagePath: string): string => {
     return imagePath
@@ -255,12 +312,13 @@ function App() {
   };
 
   const addTask = async (projectId: number) => {
-    if (!newTaskName.trim()) return;
-    const updated = await invoke<Project | null>("add_task", { projectId, name: newTaskName.trim() });
+    const taskName = newTaskNames[projectId] || "";
+    if (!taskName.trim()) return;
+    const updated = await invoke<Project | null>("add_task", { projectId, name: taskName.trim() });
     if (updated) {
       setProjects(projects.map(p => p.id === projectId ? updated : p));
     }
-    setNewTaskName("");
+    setNewTaskNames(prev => ({ ...prev, [projectId]: "" }));
   };
 
   const removeTask = async (projectId: number, taskId: number) => {
@@ -399,6 +457,122 @@ function App() {
     setEditing(null);
   };
 
+  const getTimeRangeTimestamps = (range: TimeRange): [number, number] => {
+    const now = Math.floor(Date.now() / 1000);
+    const day = 86400;
+    switch (range) {
+      case "1d": return [now - day, now];
+      case "3d": return [now - 3 * day, now];
+      case "7d": return [now - 7 * day, now];
+      case "1m": return [now - 30 * day, now];
+    }
+  };
+
+  const loadDatabaseData = useCallback(async () => {
+    const [startTime, endTime] = getTimeRangeTimestamps(dbTimeRange);
+    const [hourly, daily, stats] = await Promise.all([
+      invoke<HourlyActivity[]>("get_hourly_activity", { startTime, endTime }),
+      invoke<DailyActivity[]>("get_daily_activity", { startTime, endTime }),
+      invoke<ProjectTimeStats[]>("get_project_time_stats", { startTime, endTime }),
+    ]);
+    setHourlyActivity(hourly);
+    setDailyActivity(daily);
+    setProjectStats(stats);
+  }, [dbTimeRange]);
+
+  useEffect(() => {
+    if (currentView === "database") {
+      loadDatabaseData();
+    }
+  }, [currentView, loadDatabaseData]);
+
+  const exportToXlsx = async () => {
+    const allProjects = await invoke<Project[]>("get_projects");
+    const entries = await invoke<TimeEntry[]>("get_all_time_entries");
+
+    const projectsSheet = allProjects.map(p => ({
+      "Project ID": p.id,
+      "Project Name": p.name,
+      "Total Time (seconds)": p.tasks.reduce((sum, t) => sum + t.time_seconds, 0),
+      "Total Time": formatTime(p.tasks.reduce((sum, t) => sum + t.time_seconds, 0)),
+      "Task Count": p.tasks.length,
+    }));
+
+    const tasksSheet = allProjects.flatMap(p =>
+      p.tasks.map(t => ({
+        "Task ID": t.id,
+        "Task Name": t.name,
+        "Project ID": p.id,
+        "Project Name": p.name,
+        "Time (seconds)": t.time_seconds,
+        "Time": formatTime(t.time_seconds),
+      }))
+    );
+
+    const entriesSheet = entries.map(e => {
+      const project = allProjects.find(p => p.id === e.project_id);
+      const task = project?.tasks.find(t => t.id === e.task_id);
+      return {
+        "Entry ID": e.id,
+        "Project": project?.name || "Unknown",
+        "Task": task?.name || "Unknown",
+        "Start": new Date(e.start_time * 1000).toLocaleString(),
+        "End": new Date(e.end_time * 1000).toLocaleString(),
+        "Duration (seconds)": e.duration_seconds,
+        "Duration": formatTime(e.duration_seconds),
+      };
+    });
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(projectsSheet), "Projects");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tasksSheet), "Tasks");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(entriesSheet), "Time Entries");
+    XLSX.writeFile(wb, `rotator-export-${new Date().toISOString().split("T")[0]}.xlsx`);
+  };
+
+  const formatHours = (seconds: number): string => {
+    const hours = seconds / 3600;
+    return hours >= 1 ? `${hours.toFixed(1)}h` : `${Math.round(seconds / 60)}m`;
+  };
+
+  const getYearActivityData = (): { date: string; level: number }[] => {
+    const today = new Date();
+    const oneYearAgo = new Date(today);
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+
+    const activityMap = new Map(dailyActivity.map(d => [d.date, d.total_seconds]));
+    const maxSeconds = Math.max(...dailyActivity.map(d => d.total_seconds), 1);
+
+    const result: { date: string; level: number }[] = [];
+    const current = new Date(oneYearAgo);
+
+    while (current <= today) {
+      const dateStr = current.toISOString().split("T")[0];
+      const seconds = activityMap.get(dateStr) || 0;
+      const level = seconds === 0 ? 0 : Math.min(4, Math.ceil((seconds / maxSeconds) * 4));
+      result.push({ date: dateStr, level });
+      current.setDate(current.getDate() + 1);
+    }
+
+    return result;
+  };
+
+  const getHourlyChartData = () => {
+    const allHours = Array.from({ length: 24 }, (_, i) => ({
+      hour: i,
+      label: `${i.toString().padStart(2, "0")}:00`,
+      total_seconds: 0,
+    }));
+
+    hourlyActivity.forEach(h => {
+      if (h.hour >= 0 && h.hour < 24) {
+        allHours[h.hour].total_seconds = h.total_seconds;
+      }
+    });
+
+    return allHours;
+  };
+
   return (
     <div className="app">
       {currentView === "main" ? (
@@ -506,12 +680,11 @@ function App() {
 
                 <div className="tasks-section">
                     <div className="inline-add-form task-inline-add">
-                      <span className="inline-add-icon" onClick={() => taskInputRef.current?.focus()}>+</span>
+                      <span className="inline-add-icon">+</span>
                       <input
-                        ref={taskInputRef}
                         type="text"
-                        value={newTaskName}
-                        onChange={(e) => setNewTaskName(e.target.value)}
+                        value={newTaskNames[project.id] || ""}
+                        onChange={(e) => setNewTaskNames(prev => ({ ...prev, [project.id]: e.target.value }))}
                         placeholder="Add task..."
                         className="inline-add-input"
                         onKeyDown={(e) => {
@@ -521,7 +694,7 @@ function App() {
                           }
                         }}
                         onBlur={() => {
-                          if (newTaskName.trim()) {
+                          if ((newTaskNames[project.id] || "").trim()) {
                             addTask(project.id);
                           }
                         }}
@@ -665,14 +838,14 @@ function App() {
             </p>
             <div className="donate-iframe-container">
               <iframe
-                src="https://the-ihor.com/donate"
+                src={`${API_BASE_URL}/iframe/support`}
                 title="Donate"
                 className="donate-iframe"
               />
             </div>
           </div>
         </div>
-      ) : (
+      ) : currentView === "settings" ? (
         <div className="settings-view">
           <div className="settings-section">
             <h2>Keyboard Shortcuts</h2>
@@ -731,7 +904,151 @@ function App() {
             </button>
           </div>
         </div>
-      )}
+      ) : currentView === "database" ? (
+        <div className="database-view">
+          <div className="db-header">
+            <h2>Analytics</h2>
+            <button className="export-btn" onClick={exportToXlsx}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              Export to XLS
+            </button>
+          </div>
+
+          <div className="time-range-selector">
+            {(["1d", "3d", "7d", "1m"] as TimeRange[]).map(range => (
+              <button
+                key={range}
+                className={`range-btn ${dbTimeRange === range ? "active" : ""}`}
+                onClick={() => setDbTimeRange(range)}
+              >
+                {range === "1d" ? "1 Day" : range === "3d" ? "3 Days" : range === "7d" ? "7 Days" : "1 Month"}
+              </button>
+            ))}
+          </div>
+
+          <div className="db-section">
+            <h3>Activity by Hour</h3>
+            <div className="chart-container">
+              <ResponsiveContainer width="100%" height={180}>
+                <BarChart data={getHourlyChartData()} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fontSize: 10, fill: "var(--text-muted)" }}
+                    tickLine={false}
+                    axisLine={false}
+                    interval={2}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 10, fill: "var(--text-muted)" }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => formatHours(v)}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      background: "var(--bg-secondary)",
+                      border: "1px solid var(--border-color)",
+                      borderRadius: "6px",
+                      fontSize: "12px",
+                    }}
+                    formatter={(value: number) => [formatHours(value), "Time"]}
+                    labelFormatter={(label) => `${label}`}
+                  />
+                  <Bar dataKey="total_seconds" radius={[4, 4, 0, 0]}>
+                    {getHourlyChartData().map((_, index) => (
+                      <Cell key={index} fill="var(--accent)" />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="db-section">
+            <h3>Time by Project</h3>
+            {projectStats.length === 0 ? (
+              <div className="no-data">No project data for this period</div>
+            ) : (
+              <div className="chart-container">
+                <ResponsiveContainer width="100%" height={Math.max(150, projectStats.length * 40)}>
+                  <BarChart
+                    data={projectStats}
+                    layout="vertical"
+                    margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+                  >
+                    <XAxis
+                      type="number"
+                      tick={{ fontSize: 10, fill: "var(--text-muted)" }}
+                      tickLine={false}
+                      axisLine={false}
+                      tickFormatter={(v) => formatHours(v)}
+                    />
+                    <YAxis
+                      type="category"
+                      dataKey="project_name"
+                      tick={{ fontSize: 11, fill: "var(--text-primary)" }}
+                      tickLine={false}
+                      axisLine={false}
+                      width={100}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        background: "var(--bg-secondary)",
+                        border: "1px solid var(--border-color)",
+                        borderRadius: "6px",
+                        fontSize: "12px",
+                      }}
+                      formatter={(value: number) => [formatHours(value), "Time"]}
+                    />
+                    <Bar dataKey="total_seconds" radius={[0, 4, 4, 0]}>
+                      {projectStats.map((_, index) => (
+                        <Cell key={index} fill={`hsl(${(index * 45 + 230) % 360}, 70%, 60%)`} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+
+          <div className="db-section">
+            <h3>Year Activity</h3>
+            <div className="github-activity">
+              <div className="activity-grid">
+                {(() => {
+                  const data = getYearActivityData();
+                  const weeks: { date: string; level: number }[][] = [];
+                  for (let i = 0; i < data.length; i += 7) {
+                    weeks.push(data.slice(i, i + 7));
+                  }
+                  return weeks.map((week, weekIdx) => (
+                    <div key={weekIdx} className="activity-week">
+                      {week.map((day, dayIdx) => (
+                        <div
+                          key={dayIdx}
+                          className={`activity-cell level-${day.level}`}
+                          title={`${day.date}: Level ${day.level}`}
+                        />
+                      ))}
+                    </div>
+                  ));
+                })()}
+              </div>
+              <div className="activity-legend">
+                <span>Less</span>
+                {[0, 1, 2, 3, 4].map(level => (
+                  <div key={level} className={`activity-cell level-${level}`} />
+                ))}
+                <span>More</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <footer className="toolbar">
         {currentView === "main" ? (
@@ -742,6 +1059,14 @@ function App() {
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
               </svg>
               <span>Settings</span>
+            </button>
+            <button className="toolbar-btn" onClick={() => setCurrentView("database")}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+              </svg>
+              <span>Database</span>
             </button>
             <button className="toolbar-btn" onClick={() => setCurrentView("donate")}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">

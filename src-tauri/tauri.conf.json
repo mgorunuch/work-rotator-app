@@ -14,7 +14,8 @@
       {
         "title": "Rotator",
         "width": 400,
-        "height": 500
+        "height": 500,
+        "useHttpsScheme": true
       }
     ],
     "security": {

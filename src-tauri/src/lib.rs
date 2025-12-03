@@ -31,6 +31,35 @@ struct ActiveTracking {
     started_at: u64,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct TimeEntry {
+    id: u64,
+    project_id: u64,
+    task_id: u64,
+    start_time: u64,
+    end_time: u64,
+    duration_seconds: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct HourlyActivity {
+    hour: u32,
+    total_seconds: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct DailyActivity {
+    date: String,
+    total_seconds: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ProjectTimeStats {
+    project_id: u64,
+    project_name: String,
+    total_seconds: u64,
+}
+
 struct AppState {
     db: Mutex<Connection>,
     projects: Mutex<Vec<Project>>,
@@ -86,6 +115,20 @@ fn init_db(conn: &Connection) {
         )",
         [],
     ).expect("Failed to create active_tracking table");
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS time_entries (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            task_id INTEGER NOT NULL,
+            start_time INTEGER NOT NULL,
+            end_time INTEGER NOT NULL,
+            duration_seconds INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        )",
+        [],
+    ).expect("Failed to create time_entries table");
 }
 
 fn load_projects(conn: &Connection) -> Vec<Project> {
@@ -436,7 +479,8 @@ fn stop_tracking_internal(state: &State<AppState>) -> Option<u64> {
     let db = state.db.lock().unwrap();
 
     if let Some(ref t) = *tracking {
-        let elapsed = now_seconds() - t.started_at;
+        let end_time = now_seconds();
+        let elapsed = end_time - t.started_at;
 
         if let Some(project) = projects.iter_mut().find(|p| p.id == t.project_id) {
             if let Some(task) = project.tasks.iter_mut().find(|tk| tk.id == t.task_id) {
@@ -444,6 +488,12 @@ fn stop_tracking_internal(state: &State<AppState>) -> Option<u64> {
                 db.execute(
                     "UPDATE tasks SET time_seconds = ? WHERE id = ?",
                     params![task.time_seconds, task.id],
+                ).ok();
+
+                // Save time entry
+                db.execute(
+                    "INSERT INTO time_entries (project_id, task_id, start_time, end_time, duration_seconds) VALUES (?, ?, ?, ?, ?)",
+                    params![t.project_id, t.task_id, t.started_at, end_time, elapsed],
                 ).ok();
             }
         }
@@ -463,7 +513,8 @@ fn stop_tracking(state: State<AppState>) -> Option<u64> {
     let db = state.db.lock().unwrap();
 
     if let Some(ref t) = *tracking {
-        let elapsed = now_seconds() - t.started_at;
+        let end_time = now_seconds();
+        let elapsed = end_time - t.started_at;
 
         if let Some(project) = projects.iter_mut().find(|p| p.id == t.project_id) {
             if let Some(task) = project.tasks.iter_mut().find(|tk| tk.id == t.task_id) {
@@ -471,6 +522,12 @@ fn stop_tracking(state: State<AppState>) -> Option<u64> {
                 db.execute(
                     "UPDATE tasks SET time_seconds = ? WHERE id = ?",
                     params![task.time_seconds, task.id],
+                ).ok();
+
+                // Save time entry
+                db.execute(
+                    "INSERT INTO time_entries (project_id, task_id, start_time, end_time, duration_seconds) VALUES (?, ?, ?, ?, ?)",
+                    params![t.project_id, t.task_id, t.started_at, end_time, elapsed],
                 ).ok();
             }
         }
@@ -501,6 +558,123 @@ fn get_current_project(state: State<AppState>) -> Option<Project> {
 }
 
 #[tauri::command]
+fn get_time_entries(state: State<AppState>, start_time: u64, end_time: u64) -> Vec<TimeEntry> {
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT id, project_id, task_id, start_time, end_time, duration_seconds
+         FROM time_entries
+         WHERE start_time >= ? AND start_time <= ?
+         ORDER BY start_time"
+    ).unwrap();
+
+    let entries = stmt.query_map(params![start_time, end_time], |row| {
+        Ok(TimeEntry {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            task_id: row.get(2)?,
+            start_time: row.get(3)?,
+            end_time: row.get(4)?,
+            duration_seconds: row.get(5)?,
+        })
+    }).unwrap();
+
+    entries.filter_map(|e| e.ok()).collect()
+}
+
+#[tauri::command]
+fn get_hourly_activity(state: State<AppState>, start_time: u64, end_time: u64) -> Vec<HourlyActivity> {
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT (start_time % 86400) / 3600 as hour, SUM(duration_seconds) as total
+         FROM time_entries
+         WHERE start_time >= ? AND start_time <= ?
+         GROUP BY hour
+         ORDER BY hour"
+    ).unwrap();
+
+    let activities = stmt.query_map(params![start_time, end_time], |row| {
+        Ok(HourlyActivity {
+            hour: row.get(0)?,
+            total_seconds: row.get(1)?,
+        })
+    }).unwrap();
+
+    activities.filter_map(|a| a.ok()).collect()
+}
+
+#[tauri::command]
+fn get_daily_activity(state: State<AppState>, start_time: u64, end_time: u64) -> Vec<DailyActivity> {
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT date(start_time, 'unixepoch', 'localtime') as day, SUM(duration_seconds) as total
+         FROM time_entries
+         WHERE start_time >= ? AND start_time <= ?
+         GROUP BY day
+         ORDER BY day"
+    ).unwrap();
+
+    let activities = stmt.query_map(params![start_time, end_time], |row| {
+        Ok(DailyActivity {
+            date: row.get(0)?,
+            total_seconds: row.get(1)?,
+        })
+    }).unwrap();
+
+    activities.filter_map(|a| a.ok()).collect()
+}
+
+#[tauri::command]
+fn get_project_time_stats(state: State<AppState>, start_time: u64, end_time: u64) -> Vec<ProjectTimeStats> {
+    let db = state.db.lock().unwrap();
+    let projects = state.projects.lock().unwrap();
+
+    let mut stmt = db.prepare(
+        "SELECT project_id, SUM(duration_seconds) as total
+         FROM time_entries
+         WHERE start_time >= ? AND start_time <= ?
+         GROUP BY project_id
+         ORDER BY total DESC"
+    ).unwrap();
+
+    let stats = stmt.query_map(params![start_time, end_time], |row| {
+        Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?))
+    }).unwrap();
+
+    stats.filter_map(|s| s.ok())
+        .map(|(project_id, total_seconds)| {
+            let project_name = projects.iter()
+                .find(|p| p.id == project_id)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+            ProjectTimeStats { project_id, project_name, total_seconds }
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn get_all_time_entries(state: State<AppState>) -> Vec<TimeEntry> {
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT id, project_id, task_id, start_time, end_time, duration_seconds
+         FROM time_entries
+         ORDER BY start_time"
+    ).unwrap();
+
+    let entries = stmt.query_map([], |row| {
+        Ok(TimeEntry {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            task_id: row.get(2)?,
+            start_time: row.get(3)?,
+            end_time: row.get(4)?,
+            duration_seconds: row.get(5)?,
+        })
+    }).unwrap();
+
+    entries.filter_map(|e| e.ok()).collect()
+}
+
+#[tauri::command]
 fn update_tray_title(app: AppHandle, title: String) -> Result<(), String> {
     match app.tray_by_id("main-tray") {
         Some(tray) => {
@@ -526,6 +700,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_http::init())
         .manage(AppState {
             db: Mutex::new(conn),
             projects: Mutex::new(projects),
@@ -584,6 +759,11 @@ pub fn run() {
             stop_tracking,
             get_active_tracking,
             get_current_project,
+            get_time_entries,
+            get_hourly_activity,
+            get_daily_activity,
+            get_project_time_stats,
+            get_all_time_entries,
             update_tray_title
         ])
         .run(tauri::generate_context!())
