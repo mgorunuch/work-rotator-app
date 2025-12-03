@@ -477,7 +477,6 @@ function App() {
                       </DropdownMenu.Content>
                     </DropdownMenu.Portal>
                   </DropdownMenu.Root>
-                  <span className="project-index">{index + 1}</span>
                   {editing?.type === "project" && editing.id === project.id ? (
                     <input
                       className="inline-edit-input"

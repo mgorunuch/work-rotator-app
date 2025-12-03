@@ -310,25 +310,6 @@ body {
   border-left: 3px solid var(--accent);
 }
 
-.project-index {
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-tertiary);
-  border-radius: 50%;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-}
-
-.project-header.active .project-index {
-  background: var(--accent);
-  color: white;
-}
-
 .project-name {
   flex: 1;
   font-size: 0.9rem;
