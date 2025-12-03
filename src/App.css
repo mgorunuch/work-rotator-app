@@ -1024,10 +1024,11 @@ body {
 
 /* Database View Styles */
 .database-view {
-  padding: 16px;
-  padding-bottom: 80px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   overflow-y: auto;
-  max-height: calc(100vh - 60px);
 }
 
 .db-header {
@@ -1059,13 +1060,35 @@ body {
   transition: all 0.2s;
 }
 
-.export-btn:hover {
+.export-btn:hover:not(:disabled) {
   background: var(--accent-hover, #5558e3);
   transform: translateY(-1px);
 }
 
+.export-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .export-btn svg {
   flex-shrink: 0;
+}
+
+.export-container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.export-message {
+  font-size: 12px;
+  color: var(--success);
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .time-range-selector {
@@ -1126,32 +1149,33 @@ body {
   font-size: 13px;
 }
 
-/* GitHub-style Activity Grid */
-.github-activity {
-  overflow-x: auto;
+/* Month-based Activity Grid */
+.activity-months {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
 }
 
-.activity-grid {
-  display: flex;
-  gap: 3px;
-  padding: 8px 0;
+.activity-month {
 }
 
-.activity-week {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+.activity-month-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.activity-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 10px);
+  gap: 2px;
 }
 
 .activity-cell {
   width: 10px;
   height: 10px;
   border-radius: 2px;
-  transition: transform 0.1s;
-}
-
-.activity-cell:hover {
-  transform: scale(1.3);
 }
 
 .activity-cell.level-0 {
@@ -1187,6 +1211,7 @@ body {
 .activity-legend .activity-cell {
   width: 10px;
   height: 10px;
+  flex-shrink: 0;
 }
 
 /* Light mode adjustments for database view */

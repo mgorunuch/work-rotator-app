@@ -91,7 +91,6 @@ const formatTime = (seconds: number): string => {
 };
 
 type View = "main" | "donate" | "settings" | "database";
-type TimeRange = "1d" | "3d" | "7d" | "1m";
 
 interface AdData {
   url: string;
@@ -125,7 +124,6 @@ function App() {
   const currentProject = projects[currentProjectIndex] || null;
   const projectInputRef = useRef<HTMLInputElement>(null);
   const [editing, setEditing] = useState<{ type: "project" | "task"; id: number; value: string } | null>(null);
-  const [dbTimeRange, setDbTimeRange] = useState<TimeRange>("7d");
   const [hourlyActivity, setHourlyActivity] = useState<HourlyActivity[]>([]);
   const [dailyActivity, setDailyActivity] = useState<DailyActivity[]>([]);
   const [projectStats, setProjectStats] = useState<ProjectTimeStats[]>([]);
@@ -489,17 +487,6 @@ function App() {
     setEditing(null);
   };
 
-  const getTimeRangeTimestamps = (range: TimeRange): [number, number] => {
-    const now = Math.floor(Date.now() / 1000);
-    const day = 86400;
-    switch (range) {
-      case "1d": return [now - day, now];
-      case "3d": return [now - 3 * day, now];
-      case "7d": return [now - 7 * day, now];
-      case "1m": return [now - 30 * day, now];
-    }
-  };
-
   const restoreProject = async (projectId: number) => {
     const updated = await invoke<Project[]>("restore_project", { projectId });
     setProjects(updated);
@@ -529,18 +516,19 @@ function App() {
   };
 
   const loadDatabaseData = useCallback(async () => {
-    const [startTime, endTime] = getTimeRangeTimestamps(dbTimeRange);
+    const now = Math.floor(Date.now() / 1000);
+    const oneYearAgo = now - 365 * 86400;
     const [hourly, daily, stats, allProjects] = await Promise.all([
-      invoke<HourlyActivity[]>("get_hourly_activity", { startTime, endTime }),
-      invoke<DailyActivity[]>("get_daily_activity", { startTime, endTime }),
-      invoke<ProjectTimeStats[]>("get_project_time_stats", { startTime, endTime }),
+      invoke<HourlyActivity[]>("get_hourly_activity", { startTime: oneYearAgo, endTime: now }),
+      invoke<DailyActivity[]>("get_daily_activity", { startTime: oneYearAgo, endTime: now }),
+      invoke<ProjectTimeStats[]>("get_project_time_stats", { startTime: oneYearAgo, endTime: now }),
       invoke<ProjectWithStatus[]>("get_all_projects_with_status"),
     ]);
     setHourlyActivity(hourly);
     setDailyActivity(daily);
     setProjectStats(stats);
     setAllProjectsWithStatus(allProjects);
-  }, [dbTimeRange]);
+  }, []);
 
   useEffect(() => {
     if (currentView === "database") {
@@ -548,48 +536,73 @@ function App() {
     }
   }, [currentView, loadDatabaseData]);
 
+  const [exporting, setExporting] = useState(false);
+  const [exportMessage, setExportMessage] = useState("");
+
   const exportToXlsx = async () => {
-    const allProjects = await invoke<Project[]>("get_projects");
-    const entries = await invoke<TimeEntry[]>("get_all_time_entries");
+    setExporting(true);
+    setExportMessage("");
+    try {
+      const allProjects = await invoke<Project[]>("get_projects");
+      const entries = await invoke<TimeEntry[]>("get_all_time_entries");
 
-    const projectsSheet = allProjects.map(p => ({
-      "Project ID": p.id,
-      "Project Name": p.name,
-      "Total Time (seconds)": p.tasks.reduce((sum, t) => sum + t.time_seconds, 0),
-      "Total Time": formatTime(p.tasks.reduce((sum, t) => sum + t.time_seconds, 0)),
-      "Task Count": p.tasks.length,
-    }));
+      const projectsSheet = allProjects
+        .filter(p => p.tasks.reduce((sum, t) => sum + t.time_seconds, 0) >= 3)
+        .map(p => ({
+          "Project ID": p.id,
+          "Project Name": p.name,
+          "Total Time (seconds)": p.tasks.reduce((sum, t) => sum + t.time_seconds, 0),
+          "Total Time": formatTime(p.tasks.reduce((sum, t) => sum + t.time_seconds, 0)),
+          "Task Count": p.tasks.filter(t => t.time_seconds >= 3).length,
+        }));
 
-    const tasksSheet = allProjects.flatMap(p =>
-      p.tasks.map(t => ({
-        "Task ID": t.id,
-        "Task Name": t.name,
-        "Project ID": p.id,
-        "Project Name": p.name,
-        "Time (seconds)": t.time_seconds,
-        "Time": formatTime(t.time_seconds),
-      }))
-    );
+      const tasksSheet = allProjects.flatMap(p =>
+        p.tasks
+          .filter(t => t.time_seconds >= 3)
+          .map(t => ({
+            "Task ID": t.id,
+            "Task Name": t.name,
+            "Project ID": p.id,
+            "Project Name": p.name,
+            "Time (seconds)": t.time_seconds,
+            "Time": formatTime(t.time_seconds),
+          }))
+      );
 
-    const entriesSheet = entries.map(e => {
-      const project = allProjects.find(p => p.id === e.project_id);
-      const task = project?.tasks.find(t => t.id === e.task_id);
-      return {
-        "Entry ID": e.id,
-        "Project": project?.name || "Unknown",
-        "Task": task?.name || "Unknown",
-        "Start": new Date(e.start_time * 1000).toLocaleString(),
-        "End": new Date(e.end_time * 1000).toLocaleString(),
-        "Duration (seconds)": e.duration_seconds,
-        "Duration": formatTime(e.duration_seconds),
-      };
-    });
+      const entriesSheet = entries
+        .filter(e => e.duration_seconds >= 3)
+        .map(e => {
+          const project = allProjects.find(p => p.id === e.project_id);
+          const task = project?.tasks.find(t => t.id === e.task_id);
+          return {
+            "Entry ID": e.id,
+            "Project": project?.name || "Unknown",
+            "Task": task?.name || "Unknown",
+            "Start": new Date(e.start_time * 1000).toLocaleString(),
+            "End": new Date(e.end_time * 1000).toLocaleString(),
+            "Duration (seconds)": e.duration_seconds,
+            "Duration": formatTime(e.duration_seconds),
+          };
+        });
 
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(projectsSheet), "Projects");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tasksSheet), "Tasks");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(entriesSheet), "Time Entries");
-    XLSX.writeFile(wb, `rotator-export-${new Date().toISOString().split("T")[0]}.xlsx`);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(projectsSheet), "Projects");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tasksSheet), "Tasks");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(entriesSheet), "Time Entries");
+
+      const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+      const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `rotator-export-${new Date().toISOString().split("T")[0]}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setExportMessage("Saved to Downloads folder");
+      setTimeout(() => setExportMessage(""), 3000);
+    } finally {
+      setExporting(false);
+    }
   };
 
   const formatHours = (seconds: number): string => {
@@ -597,7 +610,7 @@ function App() {
     return hours >= 1 ? `${hours.toFixed(1)}h` : `${Math.round(seconds / 60)}m`;
   };
 
-  const getYearActivityData = (): { date: string; level: number }[] => {
+  const getYearActivityByMonth = (): { month: string; label: string; days: { date: string; level: number }[] }[] => {
     const today = new Date();
     const oneYearAgo = new Date(today);
     oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
@@ -605,18 +618,22 @@ function App() {
     const activityMap = new Map(dailyActivity.map(d => [d.date, d.total_seconds]));
     const maxSeconds = Math.max(...dailyActivity.map(d => d.total_seconds), 1);
 
-    const result: { date: string; level: number }[] = [];
+    const months: Map<string, { label: string; days: { date: string; level: number }[] }> = new Map();
     const current = new Date(oneYearAgo);
 
     while (current <= today) {
       const dateStr = current.toISOString().split("T")[0];
+      const monthKey = `${current.getFullYear()}-${current.getMonth()}`;
+      const monthLabel = current.toLocaleDateString("en-US", { month: "short" });
       const seconds = activityMap.get(dateStr) || 0;
       const level = seconds === 0 ? 0 : Math.min(4, Math.ceil((seconds / maxSeconds) * 4));
-      result.push({ date: dateStr, level });
+
+      if (!months.has(monthKey)) months.set(monthKey, { label: monthLabel, days: [] });
+      months.get(monthKey)!.days.push({ date: dateStr, level });
       current.setDate(current.getDate() + 1);
     }
 
-    return result;
+    return Array.from(months.entries()).map(([month, data]) => ({ month, label: data.label, days: data.days }));
   };
 
   const getHourlyChartData = () => {
@@ -1031,27 +1048,24 @@ function App() {
       ) : currentView === "database" ? (
         <div className="database-view">
           <div className="db-header">
-            <h2>Analytics</h2>
-            <button className="export-btn" onClick={exportToXlsx}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="7 10 12 15 17 10"></polyline>
-                <line x1="12" y1="15" x2="12" y2="3"></line>
-              </svg>
-              Export to XLS
-            </button>
-          </div>
-
-          <div className="time-range-selector">
-            {(["1d", "3d", "7d", "1m"] as TimeRange[]).map(range => (
-              <button
-                key={range}
-                className={`range-btn ${dbTimeRange === range ? "active" : ""}`}
-                onClick={() => setDbTimeRange(range)}
-              >
-                {range === "1d" ? "1 Day" : range === "3d" ? "3 Days" : range === "7d" ? "7 Days" : "1 Month"}
+            <h2>Database</h2>
+            <div className="export-container">
+              <button className="export-btn" onClick={exportToXlsx} disabled={exporting}>
+                {exporting ? (
+                  <>Exporting...</>
+                ) : (
+                  <>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                      <polyline points="7 10 12 15 17 10"></polyline>
+                      <line x1="12" y1="15" x2="12" y2="3"></line>
+                    </svg>
+                    Export
+                  </>
+                )}
               </button>
-            ))}
+              {exportMessage && <span className="export-message">{exportMessage}</span>}
+            </div>
           </div>
 
           <div className="db-section">
@@ -1141,34 +1155,28 @@ function App() {
 
           <div className="db-section">
             <h3>Year Activity</h3>
-            <div className="github-activity">
-              <div className="activity-grid">
-                {(() => {
-                  const data = getYearActivityData();
-                  const weeks: { date: string; level: number }[][] = [];
-                  for (let i = 0; i < data.length; i += 7) {
-                    weeks.push(data.slice(i, i + 7));
-                  }
-                  return weeks.map((week, weekIdx) => (
-                    <div key={weekIdx} className="activity-week">
-                      {week.map((day, dayIdx) => (
-                        <div
-                          key={dayIdx}
-                          className={`activity-cell level-${day.level}`}
-                          title={`${day.date}: Level ${day.level}`}
-                        />
-                      ))}
-                    </div>
-                  ));
-                })()}
-              </div>
-              <div className="activity-legend">
-                <span>Less</span>
-                {[0, 1, 2, 3, 4].map(level => (
-                  <div key={level} className={`activity-cell level-${level}`} />
-                ))}
-                <span>More</span>
-              </div>
+            <div className="activity-months">
+              {getYearActivityByMonth().map(({ month, label, days }) => (
+                <div key={month} className="activity-month">
+                  <div className="activity-month-label">{label}</div>
+                  <div className="activity-month-grid">
+                    {days.map((day, idx) => (
+                      <div
+                        key={idx}
+                        className={`activity-cell level-${day.level}`}
+                        title={`${day.date}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="activity-legend">
+              <span>Less</span>
+              {[0, 1, 2, 3, 4].map(level => (
+                <div key={level} className={`activity-cell level-${level}`} />
+              ))}
+              <span>More</span>
             </div>
           </div>
 

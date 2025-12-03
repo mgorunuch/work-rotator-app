@@ -573,19 +573,22 @@ fn stop_tracking_internal(state: &State<AppState>) -> Option<u64> {
         let end_time = now_seconds();
         let elapsed = end_time - t.started_at;
 
-        if let Some(project) = projects.iter_mut().find(|p| p.id == t.project_id) {
-            if let Some(task) = project.tasks.iter_mut().find(|tk| tk.id == t.task_id) {
-                task.time_seconds += elapsed;
-                db.execute(
-                    "UPDATE tasks SET time_seconds = ? WHERE id = ?",
-                    params![task.time_seconds, task.id],
-                ).ok();
+        // Only save if elapsed >= 3 seconds
+        if elapsed >= 3 {
+            if let Some(project) = projects.iter_mut().find(|p| p.id == t.project_id) {
+                if let Some(task) = project.tasks.iter_mut().find(|tk| tk.id == t.task_id) {
+                    task.time_seconds += elapsed;
+                    db.execute(
+                        "UPDATE tasks SET time_seconds = ? WHERE id = ?",
+                        params![task.time_seconds, task.id],
+                    ).ok();
 
-                // Save time entry
-                db.execute(
-                    "INSERT INTO time_entries (project_id, task_id, start_time, end_time, duration_seconds) VALUES (?, ?, ?, ?, ?)",
-                    params![t.project_id, t.task_id, t.started_at, end_time, elapsed],
-                ).ok();
+                    // Save time entry
+                    db.execute(
+                        "INSERT INTO time_entries (project_id, task_id, start_time, end_time, duration_seconds) VALUES (?, ?, ?, ?, ?)",
+                        params![t.project_id, t.task_id, t.started_at, end_time, elapsed],
+                    ).ok();
+                }
             }
         }
 
@@ -607,19 +610,22 @@ fn stop_tracking(state: State<AppState>) -> Option<u64> {
         let end_time = now_seconds();
         let elapsed = end_time - t.started_at;
 
-        if let Some(project) = projects.iter_mut().find(|p| p.id == t.project_id) {
-            if let Some(task) = project.tasks.iter_mut().find(|tk| tk.id == t.task_id) {
-                task.time_seconds += elapsed;
-                db.execute(
-                    "UPDATE tasks SET time_seconds = ? WHERE id = ?",
-                    params![task.time_seconds, task.id],
-                ).ok();
+        // Only save if elapsed >= 3 seconds
+        if elapsed >= 3 {
+            if let Some(project) = projects.iter_mut().find(|p| p.id == t.project_id) {
+                if let Some(task) = project.tasks.iter_mut().find(|tk| tk.id == t.task_id) {
+                    task.time_seconds += elapsed;
+                    db.execute(
+                        "UPDATE tasks SET time_seconds = ? WHERE id = ?",
+                        params![task.time_seconds, task.id],
+                    ).ok();
 
-                // Save time entry
-                db.execute(
-                    "INSERT INTO time_entries (project_id, task_id, start_time, end_time, duration_seconds) VALUES (?, ?, ?, ?, ?)",
-                    params![t.project_id, t.task_id, t.started_at, end_time, elapsed],
-                ).ok();
+                    // Save time entry
+                    db.execute(
+                        "INSERT INTO time_entries (project_id, task_id, start_time, end_time, duration_seconds) VALUES (?, ?, ?, ?, ?)",
+                        params![t.project_id, t.task_id, t.started_at, end_time, elapsed],
+                    ).ok();
+                }
             }
         }
 
