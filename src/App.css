@@ -127,6 +127,51 @@ body {
   transform: translateY(0);
 }
 
+.current-section.task-section {
+  background: linear-gradient(135deg, #8b5cf6 0%, #ec4899 100%);
+  padding: 16px;
+  box-shadow: 0 4px 20px rgba(139, 92, 246, 0.3);
+}
+
+.current-section.task-section:hover {
+  box-shadow: 0 8px 30px rgba(139, 92, 246, 0.4);
+}
+
+.current-section.task-section .current-value {
+  font-size: 1.1rem;
+}
+
+.tracking-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 14px;
+  margin-bottom: 20px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.session-time {
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  min-width: 90px;
+}
+
+.track-btn.large {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+}
+
+.track-btn.large svg {
+  width: 20px;
+  height: 20px;
+}
+
 .current-label {
   font-size: 0.75rem;
   text-transform: uppercase;

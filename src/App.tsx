@@ -375,6 +375,24 @@ function App() {
     setCurrentProjectIndex(index);
   };
 
+  const rotateTask = async () => {
+    const task = await invoke<Task | null>("rotate_task");
+    if (task) {
+      const loadedProjects = await invoke<Project[]>("get_projects");
+      setProjects(loadedProjects);
+      const currentIdx = await invoke<number>("get_current_project_index");
+      const project = loadedProjects[currentIdx];
+      if (project) {
+        const tracking = await invoke<ActiveTracking | null>("start_tracking", {
+          projectId: project.id,
+          taskId: task.id,
+        });
+        setActiveTracking(tracking);
+        if (tracking) setElapsedTime(0);
+      }
+    }
+  };
+
   const selectProject = async (index: number) => {
     await invoke<number>("set_current_project", { index });
     setCurrentProjectIndex(index);
@@ -642,6 +660,43 @@ function App() {
             </div>
           )}
 
+          {currentProject && currentProject.tasks.length > 0 && (() => {
+            const activeTasks = currentProject.tasks.filter(t => t.done_at === null);
+            const currentTask = activeTasks.length > 0
+              ? activeTasks[currentProject.current_task_index % activeTasks.length]
+              : null;
+            if (!currentTask) return null;
+            const isTracking = activeTracking?.project_id === currentProject.id && activeTracking?.task_id === currentTask.id;
+            return (
+              <>
+                <div className="current-section task-section" onClick={rotateTask}>
+                  <div className="current-label">Current Task</div>
+                  <div className="current-value">{currentTask.name}</div>
+                  <div className="current-indicator">
+                    {(currentProject.current_task_index % activeTasks.length) + 1} of {activeTasks.length} • {formatTime(currentTask.time_seconds)}
+                  </div>
+                </div>
+                <div className="tracking-controls">
+                  <button
+                    className={`track-btn large ${isTracking ? "stop" : "start"}`}
+                    onClick={() => isTracking ? stopTracking() : startTracking(currentProject.id, currentTask.id)}
+                  >
+                    {isTracking ? (
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                        <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+                      </svg>
+                    ) : (
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                      </svg>
+                    )}
+                  </button>
+                  <span className="session-time">{isTracking ? formatTime(elapsedTime) : "00:00:00"}</span>
+                </div>
+              </>
+            );
+          })()}
+
           <div className="inline-add-form project-inline-add">
             <span className="inline-add-icon" onClick={() => projectInputRef.current?.focus()}>+</span>
             <input
@@ -760,7 +815,11 @@ function App() {
                       <div className="no-tasks">No tasks yet</div>
                     ) : (
                       <ul className="tasks-list">
-                        {project.tasks.map((task) => {
+                        {[...project.tasks].sort((a, b) => {
+                          const aDone = a.done_at !== null ? 1 : 0;
+                          const bDone = b.done_at !== null ? 1 : 0;
+                          return aDone - bDone;
+                        }).map((task) => {
                           const isTracking = activeTracking?.project_id === project.id && activeTracking?.task_id === task.id;
                           const isDone = task.done_at !== null;
                           return (
