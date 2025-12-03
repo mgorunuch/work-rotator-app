@@ -267,8 +267,6 @@ body {
 
 .projects-list {
   list-style: none;
-  max-height: 400px;
-  overflow-y: auto;
 }
 
 .projects-list::-webkit-scrollbar {
