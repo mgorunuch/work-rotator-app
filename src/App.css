@@ -344,9 +344,15 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.remove-btn {
-  width: 20px;
-  height: 20px;
+/* Dots Menu */
+.dots-menu-wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.dots-btn {
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -355,17 +361,58 @@ body {
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s, color 0.15s;
+  opacity: 0.4;
+  transition: opacity 0.15s, background 0.15s;
 }
 
-.project-header:hover .remove-btn {
-  opacity: 0.5;
+.dots-btn.small {
+  width: 20px;
+  height: 20px;
 }
 
-.remove-btn:hover {
+.dots-btn:hover,
+.project-header:hover .dots-btn,
+.task-item:hover .dots-btn {
   opacity: 1;
+  background: var(--bg-tertiary);
+}
+
+.dots-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  min-width: 100px;
+  z-index: 100;
+  overflow: hidden;
+}
+
+.dropdown-item {
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.dropdown-item:hover {
+  background: var(--bg-hover);
+}
+
+.dropdown-item.danger {
   color: var(--danger);
+}
+
+.dropdown-item.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
 }
 
 .tasks-section {
@@ -476,29 +523,6 @@ body {
   transform: scale(0.9);
 }
 
-.remove-task-btn {
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s, color 0.15s;
-}
-
-.task-item:hover .remove-task-btn {
-  opacity: 0.5;
-}
-
-.remove-task-btn:hover {
-  opacity: 1;
-  color: var(--danger);
-}
 
 .footer {
   margin-top: 16px;

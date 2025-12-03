@@ -75,6 +75,7 @@ function App() {
   const currentProject = projects[currentProjectIndex] || null;
   const projectInputRef = useRef<HTMLInputElement>(null);
   const taskInputRef = useRef<HTMLInputElement>(null);
+  const [openMenu, setOpenMenu] = useState<{ type: "project" | "task"; id: number } | null>(null);
 
   const loadData = useCallback(async () => {
     const loadedProjects = await invoke<Project[]>("get_projects");
@@ -373,6 +374,13 @@ function App() {
     localStorage.setItem("hotkeySettings", JSON.stringify(defaultSettings));
   };
 
+  useEffect(() => {
+    if (!openMenu) return;
+    const handleClick = () => setOpenMenu(null);
+    document.addEventListener("click", handleClick);
+    return () => document.removeEventListener("click", handleClick);
+  }, [openMenu]);
+
   return (
     <div className="app">
       {currentView === "main" ? (
@@ -432,21 +440,38 @@ function App() {
                   className={`project-header ${index === currentProjectIndex ? "active" : ""}`}
                   onClick={() => selectProject(index)}
                 >
+                  <div className="dots-menu-wrapper">
+                    <button
+                      className="dots-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenMenu(openMenu?.type === "project" && openMenu.id === project.id ? null : { type: "project", id: project.id });
+                      }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                        <circle cx="12" cy="5" r="2"></circle>
+                        <circle cx="12" cy="12" r="2"></circle>
+                        <circle cx="12" cy="19" r="2"></circle>
+                      </svg>
+                    </button>
+                    {openMenu?.type === "project" && openMenu.id === project.id && (
+                      <div className="dots-dropdown">
+                        <button
+                          className="dropdown-item danger"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeProject(project.id);
+                            setOpenMenu(null);
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   <span className="project-index">{index + 1}</span>
                   <span className="project-name">{project.name}</span>
                   <span className="project-time">{formatTime(getProjectTotalTime(project))}</span>
-                  <button
-                    className="remove-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeProject(project.id);
-                    }}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <line x1="18" y1="6" x2="6" y2="18"></line>
-                      <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
-                  </button>
                 </div>
 
                 {index === currentProjectIndex && (
@@ -482,6 +507,35 @@ function App() {
                           const isTracking = activeTracking?.project_id === project.id && activeTracking?.task_id === task.id;
                           return (
                             <li key={task.id} className={`task-item ${isTracking ? "tracking" : ""}`}>
+                              <div className="dots-menu-wrapper">
+                                <button
+                                  className="dots-btn small"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setOpenMenu(openMenu?.type === "task" && openMenu.id === task.id ? null : { type: "task", id: task.id });
+                                  }}
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                                    <circle cx="12" cy="5" r="2"></circle>
+                                    <circle cx="12" cy="12" r="2"></circle>
+                                    <circle cx="12" cy="19" r="2"></circle>
+                                  </svg>
+                                </button>
+                                {openMenu?.type === "task" && openMenu.id === task.id && (
+                                  <div className="dots-dropdown">
+                                    <button
+                                      className="dropdown-item danger"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        removeTask(project.id, task.id);
+                                        setOpenMenu(null);
+                                      }}
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                               <span className="task-name">{task.name}</span>
                               <span className="task-time">{formatTime(getTaskTime(task))}</span>
                               <button
@@ -497,15 +551,6 @@ function App() {
                                     <polygon points="5 3 19 12 5 21 5 3"></polygon>
                                   </svg>
                                 )}
-                              </button>
-                              <button
-                                className="remove-task-btn"
-                                onClick={() => removeTask(project.id, task.id)}
-                              >
-                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                                </svg>
                               </button>
                             </li>
                           );
