@@ -43,19 +43,73 @@ jobs:
           prerelease: false
           args: --target ${{ matrix.target }}
 
-  create-universal:
+  update-homebrew:
     needs: build-macos
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: '*-apple-darwin'
-          merge-multiple: true
-
-      - name: Create universal binary info
+      - name: Get version
+        id: version
         run: |
-          echo "Universal binary can be created from the individual artifacts"
-          echo "Download both .dmg files for your architecture:"
-          echo "- aarch64 (Apple Silicon / M1/M2/M3)"
-          echo "- x86_64 (Intel)"
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Wait for release assets
+        run: sleep 30
+
+      - name: Download and hash ARM DMG
+        id: arm_hash
+        run: |
+          curl -L -o arm.dmg "https://github.com/mgorunuch/work-rotator-app/releases/download/${{ github.ref_name }}/Rotator_${{ steps.version.outputs.version }}_aarch64.dmg"
+          HASH=$(sha256sum arm.dmg | cut -d ' ' -f 1)
+          echo "sha256=$HASH" >> $GITHUB_OUTPUT
+
+      - name: Download and hash Intel DMG
+        id: intel_hash
+        run: |
+          curl -L -o intel.dmg "https://github.com/mgorunuch/work-rotator-app/releases/download/${{ github.ref_name }}/Rotator_${{ steps.version.outputs.version }}_x86_64.dmg"
+          HASH=$(sha256sum intel.dmg | cut -d ' ' -f 1)
+          echo "sha256=$HASH" >> $GITHUB_OUTPUT
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: mgorunuch/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        run: |
+          cat > homebrew-tap/Casks/rotator.rb << EOF
+          cask "rotator" do
+            arch arm: "aarch64", intel: "x86_64"
+
+            version "${{ steps.version.outputs.version }}"
+            sha256 arm:   "${{ steps.arm_hash.outputs.sha256 }}",
+                   intel: "${{ steps.intel_hash.outputs.sha256 }}"
+
+            url "https://github.com/mgorunuch/work-rotator-app/releases/download/v#{version}/Rotator_#{version}_#{arch}.dmg"
+            name "Rotator"
+            desc "Work rotation timer app"
+            homepage "https://github.com/mgorunuch/work-rotator-app"
+
+            depends_on macos: ">= :catalina"
+
+            app "Rotator.app"
+
+            zap trash: [
+              "~/Library/Application Support/com.rotator.app",
+              "~/Library/Caches/com.rotator.app",
+              "~/Library/Preferences/com.rotator.app.plist",
+            ]
+          end
+          EOF
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add Casks/rotator.rb
+          git diff --staged --quiet || git commit -m "🍺 Update Rotator to ${{ steps.version.outputs.version }}"
+          git push
