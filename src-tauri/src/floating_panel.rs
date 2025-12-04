@@ -29,6 +29,21 @@ static STOP_QUEUE: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 static HOVERED_STOP_BUTTON: Mutex<Option<usize>> = Mutex::new(None);
 
 #[cfg(target_os = "macos")]
+static IS_COLLAPSED: Mutex<bool> = Mutex::new(false);
+
+#[cfg(target_os = "macos")]
+static LAST_HOVER_TIME: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+const COLLAPSE_TIMEOUT_MS: u64 = 400;
+
+#[cfg(target_os = "macos")]
+const PANEL_WIDTH_EXPANDED: f64 = 400.0;
+
+#[cfg(target_os = "macos")]
+const PANEL_WIDTH_COLLAPSED: f64 = 80.0;
+
+#[cfg(target_os = "macos")]
 static APP_HANDLE: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 pub fn set_app_handle(handle: tauri::AppHandle) {
@@ -74,7 +89,7 @@ pub struct TimerEntry {
     pub task_id: u64,
     pub project_name: String,
     pub task_name: String,
-    pub elapsed_seconds: u64,
+    pub started_at: u64, // Unix timestamp
 }
 
 #[derive(Clone)]
@@ -113,6 +128,16 @@ impl FloatingPanel {
                 *panel_guard = Some(panel);
             }
 
+            // Initialize last hover time when showing
+            if let Ok(mut last_hover) = LAST_HOVER_TIME.lock() {
+                *last_hover = Some(std::time::Instant::now());
+            }
+
+            // Reset collapsed state when showing
+            if let Ok(mut collapsed) = IS_COLLAPSED.lock() {
+                *collapsed = false;
+            }
+
             if let Some(panel) = *panel_guard {
                 let () = msg_send![panel, orderFrontRegardless];
                 let () = msg_send![panel, setIsVisible: YES];
@@ -144,12 +169,39 @@ impl FloatingPanel {
 
             let panel_guard = self.panel.lock().unwrap();
             if let Some(panel) = *panel_guard {
-                // Resize panel based on number of entries
+                // Check if we should collapse due to timeout
+                let should_collapse = {
+                    let is_collapsed = IS_COLLAPSED.lock().ok().map(|c| *c).unwrap_or(false);
+                    if !is_collapsed {
+                        if let Ok(last_hover) = LAST_HOVER_TIME.lock() {
+                            if let Some(last_time) = *last_hover {
+                                last_time.elapsed().as_millis() >= COLLAPSE_TIMEOUT_MS as u128
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+
+                if should_collapse {
+                    if let Ok(mut collapsed) = IS_COLLAPSED.lock() {
+                        *collapsed = true;
+                    }
+                    collapse_panel(panel);
+                }
+
+                let is_collapsed = IS_COLLAPSED.lock().ok().map(|c| *c).unwrap_or(false);
+
+                // Resize panel based on number of entries (collapsed = single row)
                 let row_height: f64 = 36.0;
                 let padding: f64 = 8.0;
-                let new_height = (entry_count as f64 * row_height) + padding;
+                let visible_rows = if is_collapsed { 1 } else { entry_count };
+                let new_height = (visible_rows as f64 * row_height) + padding;
 
-                let frame: NSRect = msg_send![panel, frame];
                 let screen: id = msg_send![class!(NSScreen), mainScreen];
                 let screen_frame: NSRect = msg_send![screen, frame];
 
@@ -158,9 +210,17 @@ impl FloatingPanel {
                 let menu_bar_height: f64 = 25.0;
                 let new_y = screen_frame.size.height - new_height - margin - menu_bar_height;
 
+                // Use collapsed or expanded width
+                let panel_width = if is_collapsed {
+                    PANEL_WIDTH_COLLAPSED
+                } else {
+                    PANEL_WIDTH_EXPANDED
+                };
+                let new_x = screen_frame.size.width - panel_width - margin;
+
                 let new_frame = NSRect::new(
-                    NSPoint::new(frame.origin.x, new_y),
-                    NSSize::new(frame.size.width, new_height),
+                    NSPoint::new(new_x, new_y),
+                    NSSize::new(panel_width, new_height),
                 );
                 let () = msg_send![panel, setFrame: new_frame display: YES animate: YES];
 
@@ -278,8 +338,18 @@ impl FloatingPanel {
             );
 
             decl.add_method(
+                sel!(mouseEntered:),
+                mouse_entered as extern "C" fn(&Object, Sel, id),
+            );
+
+            decl.add_method(
                 sel!(updateTrackingAreas),
                 update_tracking_areas as extern "C" fn(&Object, Sel),
+            );
+
+            decl.add_method(
+                sel!(timerTick:),
+                timer_tick as extern "C" fn(&Object, Sel, id),
             );
 
             decl.register();
@@ -292,7 +362,27 @@ impl FloatingPanel {
         // Set up initial tracking area
         let _: () = msg_send![view, updateTrackingAreas];
 
+        // Set up 1-second timer for redraws
+        let timer: id = msg_send![class!(NSTimer),
+            scheduledTimerWithTimeInterval: 1.0f64
+            target: view
+            selector: sel!(timerTick:)
+            userInfo: nil
+            repeats: YES
+        ];
+        // Keep timer alive even when app is not active
+        let run_loop: id = msg_send![class!(NSRunLoop), currentRunLoop];
+        let common_modes = NSString::alloc(nil).init_str("kCFRunLoopCommonModes");
+        let () = msg_send![run_loop, addTimer: timer forMode: common_modes];
+
         view
+    }
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn timer_tick(this: &Object, _cmd: Sel, _timer: id) {
+    unsafe {
+        let () = msg_send![this, setNeedsDisplay: YES];
     }
 }
 
@@ -301,6 +391,7 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _dirty_rect: NSRect) {
     unsafe {
         let bounds: NSRect = msg_send![this, bounds];
         let state = CURRENT_TIMER_STATE.clone().unwrap_or_default();
+        let is_collapsed = IS_COLLAPSED.lock().ok().map(|c| *c).unwrap_or(false);
 
         // Draw rounded background
         let bg_path: id = msg_send![class!(NSBezierPath), bezierPathWithRoundedRect: bounds
@@ -315,16 +406,6 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _dirty_rect: NSRect) {
         ];
         let () = msg_send![bg_color, setFill];
         let () = msg_send![bg_path, fill];
-
-        // Draw border
-        let border_color: id = msg_send![class!(NSColor), colorWithCalibratedRed: 0.2f64
-            green: 0.2f64
-            blue: 0.2f64
-            alpha: 0.8f64
-        ];
-        let () = msg_send![border_color, setStroke];
-        let () = msg_send![bg_path, setLineWidth: 1.0f64];
-        let () = msg_send![bg_path, stroke];
 
         // Fonts and colors
         let font: id = msg_send![class!(NSFont), systemFontOfSize: 11.0f64 weight: 0.4f64];
@@ -343,9 +424,47 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _dirty_rect: NSRect) {
         if state.entries.is_empty() {
             // No active timers
             let y = bounds.size.height / 2.0 - 6.0;
-            draw_text("No active timer", 12.0, y, font, gray_color);
+            let text = if is_collapsed { "—" } else { "No active timer" };
+            draw_text(text, 12.0, y, font, gray_color);
+        } else if is_collapsed {
+            // Collapsed view: show only the biggest timer (longest running)
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let max_entry = state.entries.iter().max_by_key(|e| now.saturating_sub(e.started_at));
+            if let Some(entry) = max_entry {
+                let row_y = bounds.size.height / 2.0 - 6.0;
+
+                // Green indicator dot
+                let dot_rect = NSRect::new(
+                    NSPoint::new(10.0, row_y + 3.0),
+                    NSSize::new(6.0, 6.0),
+                );
+                let dot_path: id = msg_send![class!(NSBezierPath), bezierPathWithOvalInRect: dot_rect];
+                let () = msg_send![green_color, setFill];
+                let () = msg_send![dot_path, fill];
+
+                // Format time - calculate from started_at
+                let elapsed = now.saturating_sub(entry.started_at);
+                let hours = elapsed / 3600;
+                let minutes = (elapsed % 3600) / 60;
+                let seconds = elapsed % 60;
+                let time_str = if hours > 0 {
+                    format!("{}:{:02}:{:02}", hours, minutes, seconds)
+                } else {
+                    format!("{}:{:02}", minutes, seconds)
+                };
+
+                // Center time in collapsed view
+                draw_text(&time_str, 22.0, row_y, bold_font, white_color);
+            }
         } else {
-            // Draw each entry from top to bottom
+            // Expanded view: full details
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
             for (i, entry) in state.entries.iter().enumerate() {
                 let row_y = bounds.size.height - padding - ((i as f64 + 1.0) * row_height) + row_height / 2.0 - 6.0;
 
@@ -379,8 +498,8 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _dirty_rect: NSRect) {
                 };
                 draw_text(&task_text, 22.0 + project_width + 12.0, row_y, font, gray_color);
 
-                // Format time
-                let elapsed = entry.elapsed_seconds;
+                // Format time - calculate from started_at
+                let elapsed = now.saturating_sub(entry.started_at);
                 let hours = elapsed / 3600;
                 let minutes = (elapsed % 3600) / 60;
                 let seconds = elapsed % 60;
@@ -488,6 +607,11 @@ extern "C" fn mouse_down(this: &Object, _cmd: Sel, event: id) {
 #[cfg(target_os = "macos")]
 extern "C" fn mouse_moved(this: &Object, _cmd: Sel, event: id) {
     unsafe {
+        // Update last hover time on any mouse movement
+        if let Ok(mut last_hover) = LAST_HOVER_TIME.lock() {
+            *last_hover = Some(std::time::Instant::now());
+        }
+
         let bounds: NSRect = msg_send![this, bounds];
         let location: NSPoint = msg_send![event, locationInWindow];
         let local_point: NSPoint = msg_send![this, convertPoint: location fromView: nil];
@@ -518,6 +642,103 @@ extern "C" fn mouse_exited(this: &Object, _cmd: Sel, _event: id) {
                 *hovered = None;
                 let () = msg_send![this, setNeedsDisplay: YES];
             }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn expand_panel(view: &Object) {
+    unsafe {
+        let window: id = msg_send![view, window];
+        if window == nil {
+            return;
+        }
+
+        let screen: id = msg_send![class!(NSScreen), mainScreen];
+        let screen_frame: NSRect = msg_send![screen, frame];
+
+        let state = CURRENT_TIMER_STATE.clone().unwrap_or_default();
+        let entry_count = state.entries.len().max(1);
+        let row_height: f64 = 36.0;
+        let padding: f64 = 8.0;
+        let panel_height = (entry_count as f64 * row_height) + padding;
+        let margin: f64 = 20.0;
+        let menu_bar_height: f64 = 25.0;
+
+        // Animate to expanded width, keep top-right position
+        let new_x = screen_frame.size.width - PANEL_WIDTH_EXPANDED - margin;
+        let new_y = screen_frame.size.height - panel_height - margin - menu_bar_height;
+        let new_frame = NSRect::new(
+            NSPoint::new(new_x, new_y),
+            NSSize::new(PANEL_WIDTH_EXPANDED, panel_height),
+        );
+
+        // Fast smooth animation with easing
+        let () = msg_send![class!(NSAnimationContext), beginGrouping];
+        let context: id = msg_send![class!(NSAnimationContext), currentContext];
+        let () = msg_send![context, setDuration: 0.12f64];
+        let timing_name = NSString::alloc(nil).init_str("easeInEaseOut");
+        let timing_fn: id = msg_send![class!(CAMediaTimingFunction), functionWithName: timing_name];
+        let () = msg_send![context, setTimingFunction: timing_fn];
+        let animator: id = msg_send![window, animator];
+        let () = msg_send![animator, setFrame: new_frame display: YES];
+        let () = msg_send![class!(NSAnimationContext), endGrouping];
+
+        let () = msg_send![view, setNeedsDisplay: YES];
+        let () = msg_send![view, updateTrackingAreas];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn collapse_panel(panel: id) {
+    unsafe {
+        let frame: NSRect = msg_send![panel, frame];
+        let screen: id = msg_send![class!(NSScreen), mainScreen];
+        let screen_frame: NSRect = msg_send![screen, frame];
+        let margin: f64 = 20.0;
+
+        // Animate to collapsed width, keep top-right position
+        let new_x = screen_frame.size.width - PANEL_WIDTH_COLLAPSED - margin;
+        let row_height: f64 = 36.0;
+        let padding: f64 = 8.0;
+        let new_height = row_height + padding;
+        let menu_bar_height: f64 = 25.0;
+        let new_y = screen_frame.size.height - new_height - margin - menu_bar_height;
+
+        let new_frame = NSRect::new(
+            NSPoint::new(new_x, new_y),
+            NSSize::new(PANEL_WIDTH_COLLAPSED, new_height),
+        );
+
+        // Fast smooth animation with easing
+        let () = msg_send![class!(NSAnimationContext), beginGrouping];
+        let context: id = msg_send![class!(NSAnimationContext), currentContext];
+        let () = msg_send![context, setDuration: 0.15f64];
+        let timing_name = NSString::alloc(nil).init_str("easeInEaseOut");
+        let timing_fn: id = msg_send![class!(CAMediaTimingFunction), functionWithName: timing_name];
+        let () = msg_send![context, setTimingFunction: timing_fn];
+        let animator: id = msg_send![panel, animator];
+        let () = msg_send![animator, setFrame: new_frame display: YES];
+        let () = msg_send![class!(NSAnimationContext), endGrouping];
+
+        let content_view: id = msg_send![panel, contentView];
+        let () = msg_send![content_view, setNeedsDisplay: YES];
+        let () = msg_send![content_view, updateTrackingAreas];
+    }
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn mouse_entered(this: &Object, _cmd: Sel, _event: id) {
+    // Update last hover time
+    if let Ok(mut last_hover) = LAST_HOVER_TIME.lock() {
+        *last_hover = Some(std::time::Instant::now());
+    }
+
+    // Expand if collapsed
+    if let Ok(mut collapsed) = IS_COLLAPSED.lock() {
+        if *collapsed {
+            *collapsed = false;
+            expand_panel(this);
         }
     }
 }

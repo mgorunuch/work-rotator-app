@@ -887,7 +887,7 @@ struct FloatingTimerEntry {
     task_id: u64,
     project_name: String,
     task_name: String,
-    elapsed_seconds: u64,
+    started_at: u64, // Unix timestamp
 }
 
 #[tauri::command]
@@ -899,7 +899,7 @@ fn update_floating_timer(entries: Vec<FloatingTimerEntry>) -> Result<(), String>
                 task_id: e.task_id,
                 project_name: e.project_name,
                 task_name: e.task_name,
-                elapsed_seconds: e.elapsed_seconds,
+                started_at: e.started_at,
             })
             .collect(),
     });

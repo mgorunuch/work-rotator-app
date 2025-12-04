@@ -244,7 +244,6 @@ function App() {
         invoke<number | null>("poll_floating_timer_stop").then(taskId => {
           if (taskId !== null) {
             // Immediately update floating timer (optimistic update for instant feedback)
-            const now = Math.floor(Date.now() / 1000);
             const remainingEntries = activeTracking
               .filter(t => t.task_id !== taskId)
               .map(t => {
@@ -254,7 +253,7 @@ function App() {
                   task_id: t.task_id,
                   project_name: project?.name || "",
                   task_name: task?.name || "",
-                  elapsed_seconds: now - t.started_at,
+                  started_at: t.started_at,
                 };
               });
             invoke("update_floating_timer", { entries: remainingEntries }).catch(console.error);
@@ -326,7 +325,7 @@ function App() {
             task_id: t.task_id,
             project_name: project?.name || "",
             task_name: task?.name || "",
-            elapsed_seconds: newElapsed[t.task_id] || 0,
+            started_at: t.started_at,
           };
         });
         invoke("update_floating_timer", { entries }).catch(console.error);
