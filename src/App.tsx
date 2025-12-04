@@ -172,6 +172,29 @@ function App() {
           setCurrentProjectIndex(index);
           const loadedProjects = await invoke<Project[]>("get_projects");
           setProjects(loadedProjects);
+          const tracking = await invoke<ActiveTracking[]>("get_active_tracking");
+          // Update rotation preview for floating timer
+          if (floatingTimerEnabled) {
+            const project = loadedProjects[index];
+            if (project) {
+              const activeTasks = project.tasks.filter(t => t.done_at === null);
+              const currentTask = activeTasks.length > 0
+                ? activeTasks[project.current_task_index % activeTasks.length]
+                : null;
+              if (currentTask) {
+                const trackingEntry = tracking.find(t => t.task_id === currentTask.id);
+                invoke("update_rotation_preview", {
+                  preview: {
+                    project_name: project.name,
+                    task_name: currentTask.name,
+                    task_id: currentTask.id,
+                    is_tracking: !!trackingEntry,
+                    started_at: trackingEntry?.started_at ?? null,
+                  }
+                }).catch(console.error);
+              }
+            }
+          }
           posthog.capture("project_rotated", { source: "hotkey" });
         }
       });
@@ -180,6 +203,30 @@ function App() {
           await invoke<Task | null>("rotate_task");
           const loadedProjects = await invoke<Project[]>("get_projects");
           setProjects(loadedProjects);
+          const currentIdx = await invoke<number>("get_current_project_index");
+          const tracking = await invoke<ActiveTracking[]>("get_active_tracking");
+          // Update rotation preview for floating timer
+          if (floatingTimerEnabled) {
+            const project = loadedProjects[currentIdx];
+            if (project) {
+              const activeTasks = project.tasks.filter(t => t.done_at === null);
+              const currentTask = activeTasks.length > 0
+                ? activeTasks[project.current_task_index % activeTasks.length]
+                : null;
+              if (currentTask) {
+                const trackingEntry = tracking.find(t => t.task_id === currentTask.id);
+                invoke("update_rotation_preview", {
+                  preview: {
+                    project_name: project.name,
+                    task_name: currentTask.name,
+                    task_id: currentTask.id,
+                    is_tracking: !!trackingEntry,
+                    started_at: trackingEntry?.started_at ?? null,
+                  }
+                }).catch(console.error);
+              }
+            }
+          }
           posthog.capture("task_rotated", { source: "hotkey" });
         }
       });
@@ -229,7 +276,7 @@ function App() {
       console.error("Failed to register hotkeys:", e);
       setHotkeyRegistered(false);
     }
-  }, [hotkeySettings, posthog]);
+  }, [hotkeySettings, posthog, floatingTimerEnabled]);
 
   useEffect(() => {
     loadData();
@@ -515,10 +562,46 @@ function App() {
     await loadData();
   };
 
+  const updateRotationPreview = useCallback(async (projectsList: Project[], projectIndex: number, tracking: ActiveTracking[]) => {
+    if (!floatingTimerEnabled) return;
+
+    const project = projectsList[projectIndex];
+    if (!project) {
+      invoke("update_rotation_preview", { preview: null }).catch(console.error);
+      return;
+    }
+
+    const activeTasks = project.tasks.filter(t => t.done_at === null);
+    const currentTask = activeTasks.length > 0
+      ? activeTasks[project.current_task_index % activeTasks.length]
+      : null;
+
+    if (!currentTask) {
+      invoke("update_rotation_preview", { preview: null }).catch(console.error);
+      return;
+    }
+
+    const trackingEntry = tracking.find(t => t.task_id === currentTask.id);
+    const isTracking = !!trackingEntry;
+
+    invoke("update_rotation_preview", {
+      preview: {
+        project_name: project.name,
+        task_name: currentTask.name,
+        task_id: currentTask.id,
+        is_tracking: isTracking,
+        started_at: trackingEntry?.started_at ?? null,
+      }
+    }).catch(console.error);
+  }, [floatingTimerEnabled]);
+
   const rotateManually = async () => {
     if (projects.length === 0) return;
     const [index] = await invoke<[number, Project | null]>("rotate_project");
     setCurrentProjectIndex(index);
+    const loadedProjects = await invoke<Project[]>("get_projects");
+    setProjects(loadedProjects);
+    updateRotationPreview(loadedProjects, index, activeTracking);
     posthog.capture("project_rotated");
   };
 
@@ -526,6 +609,7 @@ function App() {
     await invoke<Task | null>("rotate_task");
     const loadedProjects = await invoke<Project[]>("get_projects");
     setProjects(loadedProjects);
+    updateRotationPreview(loadedProjects, currentProjectIndex, activeTracking);
     posthog.capture("task_rotated");
   };
 
@@ -535,6 +619,7 @@ function App() {
     const currentIdx = await invoke<number>("get_current_project_index");
     setProjects(loadedProjects);
     setCurrentProjectIndex(currentIdx);
+    updateRotationPreview(loadedProjects, currentIdx, activeTracking);
     posthog.capture("project_selected");
   };
 

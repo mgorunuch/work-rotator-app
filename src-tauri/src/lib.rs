@@ -1,6 +1,6 @@
 mod floating_panel;
 
-use floating_panel::{FloatingPanel, TimerState, pop_stopped_task, set_app_handle};
+use floating_panel::{FloatingPanel, TimerState, pop_stopped_task, set_app_handle, set_rotation_preview, clear_rotation_preview};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -911,6 +911,27 @@ fn poll_floating_timer_stop() -> Option<u64> {
     pop_stopped_task()
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct RotationPreviewEntry {
+    project_name: String,
+    task_name: String,
+    task_id: Option<u64>,
+    is_tracking: bool,
+    started_at: Option<u64>,
+}
+
+#[tauri::command]
+fn update_rotation_preview(preview: Option<RotationPreviewEntry>) -> Result<(), String> {
+    match preview {
+        Some(p) => {
+            set_rotation_preview(p.project_name, p.task_name, p.task_id, p.is_tracking, p.started_at);
+        }
+        None => {
+            clear_rotation_preview();
+        }
+    }
+    Ok(())
+}
 
 #[tauri::command]
 fn emit_tracking_updated(app: AppHandle) -> Result<(), String> {
@@ -1333,6 +1354,7 @@ pub fn run() {
             is_floating_timer_visible,
             update_floating_timer,
             poll_floating_timer_stop,
+            update_rotation_preview,
             emit_tracking_updated,
             get_all_projects_with_status,
             restore_project,

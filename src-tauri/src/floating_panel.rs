@@ -35,6 +35,12 @@ static IS_COLLAPSED: Mutex<bool> = Mutex::new(false);
 static LAST_HOVER_TIME: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
 #[cfg(target_os = "macos")]
+static ROTATION_PREVIEW: Mutex<Option<RotationPreview>> = Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+const ROTATION_PREVIEW_TIMEOUT_MS: u64 = 2500;
+
+#[cfg(target_os = "macos")]
 const COLLAPSE_TIMEOUT_MS: u64 = 400;
 
 #[cfg(target_os = "macos")]
@@ -105,6 +111,47 @@ impl Default for TimerState {
     }
 }
 
+#[derive(Clone)]
+pub struct RotationPreview {
+    pub project_name: String,
+    pub task_name: String,
+    pub task_id: Option<u64>,
+    pub is_tracking: bool,
+    pub started_at: Option<u64>, // Unix timestamp if tracking
+    pub shown_at: std::time::Instant,
+}
+
+pub fn set_rotation_preview(
+    project_name: String,
+    task_name: String,
+    task_id: Option<u64>,
+    is_tracking: bool,
+    started_at: Option<u64>,
+) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(mut preview) = ROTATION_PREVIEW.lock() {
+            *preview = Some(RotationPreview {
+                project_name,
+                task_name,
+                task_id,
+                is_tracking,
+                started_at,
+                shown_at: std::time::Instant::now(),
+            });
+        }
+    }
+}
+
+pub fn clear_rotation_preview() {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(mut preview) = ROTATION_PREVIEW.lock() {
+            *preview = None;
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 static mut CURRENT_TIMER_STATE: Option<TimerState> = None;
 
@@ -169,6 +216,15 @@ impl FloatingPanel {
 
             let panel_guard = self.panel.lock().unwrap();
             if let Some(panel) = *panel_guard {
+                // Check if rotation preview has timed out
+                if let Ok(mut preview) = ROTATION_PREVIEW.lock() {
+                    if let Some(ref p) = *preview {
+                        if p.shown_at.elapsed().as_millis() >= ROTATION_PREVIEW_TIMEOUT_MS as u128 {
+                            *preview = None;
+                        }
+                    }
+                }
+
                 // Check if we should collapse due to timeout
                 let should_collapse = {
                     let is_collapsed = IS_COLLAPSED.lock().ok().map(|c| *c).unwrap_or(false);
@@ -196,10 +252,14 @@ impl FloatingPanel {
 
                 let is_collapsed = IS_COLLAPSED.lock().ok().map(|c| *c).unwrap_or(false);
 
+                // Check if rotation preview is active (for sizing)
+                let has_preview = ROTATION_PREVIEW.lock().ok().map(|p| p.is_some()).unwrap_or(false);
+                let preview_rows = if has_preview && !is_collapsed { 1 } else { 0 };
+
                 // Resize panel based on number of entries (collapsed = single row)
                 let row_height: f64 = 36.0;
                 let padding: f64 = 8.0;
-                let visible_rows = if is_collapsed { 1 } else { entry_count };
+                let visible_rows = if is_collapsed { 1 } else { entry_count + preview_rows };
                 let new_height = (visible_rows as f64 * row_height) + padding;
 
                 let screen: id = msg_send![class!(NSScreen), mainScreen];
@@ -393,6 +453,13 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _dirty_rect: NSRect) {
         let state = CURRENT_TIMER_STATE.clone().unwrap_or_default();
         let is_collapsed = IS_COLLAPSED.lock().ok().map(|c| *c).unwrap_or(false);
 
+        // Get rotation preview if active and not timed out
+        let rotation_preview = ROTATION_PREVIEW.lock().ok().and_then(|p| {
+            p.clone().filter(|preview| {
+                preview.shown_at.elapsed().as_millis() < ROTATION_PREVIEW_TIMEOUT_MS as u128
+            })
+        });
+
         // Draw rounded background
         let bg_path: id = msg_send![class!(NSBezierPath), bezierPathWithRoundedRect: bounds
             xRadius: 12.0f64
@@ -417,56 +484,230 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _dirty_rect: NSRect) {
             blue: 0.369f64
             alpha: 1.0f64
         ];
+        // Blue color for rotation preview (selected item)
+        let blue_color: id = msg_send![class!(NSColor), colorWithCalibratedRed: 0.259f64
+            green: 0.522f64
+            blue: 0.957f64
+            alpha: 1.0f64
+        ];
 
         let row_height: f64 = 36.0;
         let padding: f64 = 4.0;
 
-        if state.entries.is_empty() {
-            // No active timers
+        // Check if we only have rotation preview (no active timers)
+        let only_preview = state.entries.is_empty() && rotation_preview.is_some();
+
+        if state.entries.is_empty() && rotation_preview.is_none() {
+            // No active timers and no rotation preview
             let y = bounds.size.height / 2.0 - 6.0;
             let text = if is_collapsed { "—" } else { "No active timer" };
             draw_text(text, 12.0, y, font, gray_color);
         } else if is_collapsed {
-            // Collapsed view: show only the biggest timer (longest running)
+            // Collapsed view: show rotation preview if active, otherwise biggest timer
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let max_entry = state.entries.iter().max_by_key(|e| now.saturating_sub(e.started_at));
-            if let Some(entry) = max_entry {
-                let row_y = bounds.size.height / 2.0 - 6.0;
+            let row_y = bounds.size.height / 2.0 - 6.0;
 
-                // Green indicator dot
+            if let Some(ref preview) = rotation_preview {
+                // Show rotation preview in collapsed mode with blue dot
                 let dot_rect = NSRect::new(
                     NSPoint::new(10.0, row_y + 3.0),
                     NSSize::new(6.0, 6.0),
                 );
                 let dot_path: id = msg_send![class!(NSBezierPath), bezierPathWithOvalInRect: dot_rect];
-                let () = msg_send![green_color, setFill];
+                let () = msg_send![blue_color, setFill];
                 let () = msg_send![dot_path, fill];
 
-                // Format time - calculate from started_at
-                let elapsed = now.saturating_sub(entry.started_at);
-                let hours = elapsed / 3600;
-                let minutes = (elapsed % 3600) / 60;
-                let seconds = elapsed % 60;
-                let time_str = if hours > 0 {
-                    format!("{}:{:02}:{:02}", hours, minutes, seconds)
+                if preview.is_tracking {
+                    if let Some(started_at) = preview.started_at {
+                        let elapsed = now.saturating_sub(started_at);
+                        let hours = elapsed / 3600;
+                        let minutes = (elapsed % 3600) / 60;
+                        let seconds = elapsed % 60;
+                        let time_str = if hours > 0 {
+                            format!("{}:{:02}:{:02}", hours, minutes, seconds)
+                        } else {
+                            format!("{}:{:02}", minutes, seconds)
+                        };
+                        draw_text(&time_str, 22.0, row_y, bold_font, white_color);
+                    }
                 } else {
-                    format!("{}:{:02}", minutes, seconds)
-                };
+                    draw_text("▶", 22.0, row_y, bold_font, blue_color);
+                }
+            } else {
+                let max_entry = state.entries.iter().max_by_key(|e| now.saturating_sub(e.started_at));
+                if let Some(entry) = max_entry {
+                    // Green indicator dot
+                    let dot_rect = NSRect::new(
+                        NSPoint::new(10.0, row_y + 3.0),
+                        NSSize::new(6.0, 6.0),
+                    );
+                    let dot_path: id = msg_send![class!(NSBezierPath), bezierPathWithOvalInRect: dot_rect];
+                    let () = msg_send![green_color, setFill];
+                    let () = msg_send![dot_path, fill];
 
-                // Center time in collapsed view
-                draw_text(&time_str, 22.0, row_y, bold_font, white_color);
+                    // Format time - calculate from started_at
+                    let elapsed = now.saturating_sub(entry.started_at);
+                    let hours = elapsed / 3600;
+                    let minutes = (elapsed % 3600) / 60;
+                    let seconds = elapsed % 60;
+                    let time_str = if hours > 0 {
+                        format!("{}:{:02}:{:02}", hours, minutes, seconds)
+                    } else {
+                        format!("{}:{:02}", minutes, seconds)
+                    };
+
+                    // Center time in collapsed view
+                    draw_text(&time_str, 22.0, row_y, bold_font, white_color);
+                }
             }
-        } else {
-            // Expanded view: full details
+        } else if only_preview {
+            // Only rotation preview, no active timers
+            let preview = rotation_preview.as_ref().unwrap();
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
+            let row_y = bounds.size.height - padding - row_height + row_height / 2.0 - 6.0;
+
+            // Blue indicator dot (selected)
+            let dot_rect = NSRect::new(
+                NSPoint::new(10.0, row_y + 3.0),
+                NSSize::new(6.0, 6.0),
+            );
+            let dot_path: id = msg_send![class!(NSBezierPath), bezierPathWithOvalInRect: dot_rect];
+            let () = msg_send![blue_color, setFill];
+            let () = msg_send![dot_path, fill];
+
+            // Project name
+            let max_project_len = 20;
+            let project_text: String = if preview.project_name.chars().count() > max_project_len {
+                format!("{}…", preview.project_name.chars().take(max_project_len - 1).collect::<String>())
+            } else {
+                preview.project_name.clone()
+            };
+            draw_text(&project_text, 22.0, row_y, bold_font, white_color);
+
+            // Separator and task name
+            let project_width = text_width(&project_text, bold_font);
+            draw_text("·", 22.0 + project_width + 4.0, row_y, font, gray_color);
+
+            let max_task_len = 25;
+            let task_text: String = if preview.task_name.chars().count() > max_task_len {
+                format!("{}…", preview.task_name.chars().take(max_task_len - 1).collect::<String>())
+            } else {
+                preview.task_name.clone()
+            };
+            draw_text(&task_text, 22.0 + project_width + 12.0, row_y, font, gray_color);
+
+            // Show status on right side
+            if preview.is_tracking {
+                if let Some(started_at) = preview.started_at {
+                    let elapsed = now.saturating_sub(started_at);
+                    let hours = elapsed / 3600;
+                    let minutes = (elapsed % 3600) / 60;
+                    let seconds = elapsed % 60;
+                    let time_str = if hours > 0 {
+                        format!("{}:{:02}:{:02}", hours, minutes, seconds)
+                    } else {
+                        format!("{}:{:02}", minutes, seconds)
+                    };
+                    let time_w = text_width(&time_str, bold_font);
+                    draw_text(&time_str, bounds.size.width - time_w - 16.0, row_y, bold_font, green_color);
+                }
+            } else {
+                let ready_text = "▶ Ready";
+                let ready_w = text_width(ready_text, font);
+                draw_text(ready_text, bounds.size.width - ready_w - 16.0, row_y, font, blue_color);
+            }
+        } else {
+            // Expanded view: full details with rotation preview at top
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            // Calculate offset for timer entries if preview is shown
+            let preview_offset = if rotation_preview.is_some() { 1.0 } else { 0.0 };
+
+            // Draw rotation preview first (at top)
+            if let Some(ref preview) = rotation_preview {
+                let row_y = bounds.size.height - padding - row_height + row_height / 2.0 - 6.0;
+
+                // Blue indicator dot (selected)
+                let dot_rect = NSRect::new(
+                    NSPoint::new(10.0, row_y + 3.0),
+                    NSSize::new(6.0, 6.0),
+                );
+                let dot_path: id = msg_send![class!(NSBezierPath), bezierPathWithOvalInRect: dot_rect];
+                let () = msg_send![blue_color, setFill];
+                let () = msg_send![dot_path, fill];
+
+                // Project name
+                let max_project_len = 20;
+                let project_text: String = if preview.project_name.chars().count() > max_project_len {
+                    format!("{}…", preview.project_name.chars().take(max_project_len - 1).collect::<String>())
+                } else {
+                    preview.project_name.clone()
+                };
+                draw_text(&project_text, 22.0, row_y, bold_font, white_color);
+
+                // Separator and task name
+                let project_width = text_width(&project_text, bold_font);
+                draw_text("·", 22.0 + project_width + 4.0, row_y, font, gray_color);
+
+                let max_task_len = 25;
+                let task_text: String = if preview.task_name.chars().count() > max_task_len {
+                    format!("{}…", preview.task_name.chars().take(max_task_len - 1).collect::<String>())
+                } else {
+                    preview.task_name.clone()
+                };
+                draw_text(&task_text, 22.0 + project_width + 12.0, row_y, font, gray_color);
+
+                // Show status on right side
+                if preview.is_tracking {
+                    if let Some(started_at) = preview.started_at {
+                        let elapsed = now.saturating_sub(started_at);
+                        let hours = elapsed / 3600;
+                        let minutes = (elapsed % 3600) / 60;
+                        let seconds = elapsed % 60;
+                        let time_str = if hours > 0 {
+                            format!("{}:{:02}:{:02}", hours, minutes, seconds)
+                        } else {
+                            format!("{}:{:02}", minutes, seconds)
+                        };
+                        let time_w = text_width(&time_str, bold_font);
+                        draw_text(&time_str, bounds.size.width - time_w - 16.0, row_y, bold_font, green_color);
+                    }
+                } else {
+                    let ready_text = "▶ Ready";
+                    let ready_w = text_width(ready_text, font);
+                    draw_text(ready_text, bounds.size.width - ready_w - 16.0, row_y, font, blue_color);
+                }
+
+                // Draw separator line between preview and timers
+                if !state.entries.is_empty() {
+                    let line_y = bounds.size.height - padding - row_height;
+                    let line_color: id = msg_send![class!(NSColor), colorWithCalibratedRed: 0.259f64
+                        green: 0.522f64
+                        blue: 0.957f64
+                        alpha: 0.4f64
+                    ];
+                    let () = msg_send![line_color, setStroke];
+
+                    let line_path: id = msg_send![class!(NSBezierPath), bezierPath];
+                    let () = msg_send![line_path, moveToPoint: NSPoint::new(10.0, line_y)];
+                    let () = msg_send![line_path, lineToPoint: NSPoint::new(bounds.size.width - 10.0, line_y)];
+                    let () = msg_send![line_path, setLineWidth: 0.5f64];
+                    let () = msg_send![line_path, stroke];
+                }
+            }
+
+            // Draw timer entries
             for (i, entry) in state.entries.iter().enumerate() {
-                let row_y = bounds.size.height - padding - ((i as f64 + 1.0) * row_height) + row_height / 2.0 - 6.0;
+                let row_y = bounds.size.height - padding - ((i as f64 + 1.0 + preview_offset) * row_height) + row_height / 2.0 - 6.0;
 
                 // Green indicator dot
                 let dot_rect = NSRect::new(
@@ -541,7 +782,7 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _dirty_rect: NSRect) {
 
                 // Draw separator line between entries (except last)
                 if i < state.entries.len() - 1 {
-                    let line_y = bounds.size.height - padding - ((i as f64 + 1.0) * row_height);
+                    let line_y = bounds.size.height - padding - ((i as f64 + 1.0 + preview_offset) * row_height);
                     let line_color: id = msg_send![class!(NSColor), colorWithCalibratedWhite: 0.2f64 alpha: 0.5f64];
                     let () = msg_send![line_color, setStroke];
 
