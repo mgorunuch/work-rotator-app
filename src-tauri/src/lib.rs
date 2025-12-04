@@ -1091,6 +1091,43 @@ fn reset_database(state: State<AppState>) -> Vec<Project> {
 }
 
 #[tauri::command]
+fn add_time_entry_manual(
+    project_id: u64,
+    task_id: u64,
+    start_time: u64,
+    duration_seconds: u64,
+    state: State<AppState>,
+) -> bool {
+    let mut projects = state.projects.lock().unwrap();
+    let db = state.db.lock().unwrap();
+
+    let end_time = start_time + duration_seconds;
+
+    // Insert the time entry
+    if db.execute(
+        "INSERT INTO time_entries (project_id, task_id, start_time, end_time, duration_seconds) VALUES (?, ?, ?, ?, ?)",
+        params![project_id, task_id, start_time, end_time, duration_seconds],
+    ).is_ok() {
+        // Update the task's total time
+        db.execute(
+            "UPDATE tasks SET time_seconds = time_seconds + ? WHERE id = ?",
+            params![duration_seconds, task_id],
+        ).ok();
+
+        // Update in-memory project state
+        if let Some(project) = projects.iter_mut().find(|p| p.id == project_id) {
+            if let Some(task) = project.tasks.iter_mut().find(|t| t.id == task_id) {
+                task.time_seconds += duration_seconds;
+            }
+        }
+
+        return true;
+    }
+
+    false
+}
+
+#[tauri::command]
 fn add_mock_data(state: State<AppState>) -> Vec<Project> {
     let db = state.db.lock().unwrap();
     let mut projects = state.projects.lock().unwrap();
@@ -1304,7 +1341,8 @@ pub fn run() {
             delete_task_permanent,
             delete_project_permanent,
             reset_database,
-            add_mock_data
+            add_mock_data,
+            add_time_entry_manual
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

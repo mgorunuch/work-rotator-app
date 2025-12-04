@@ -691,6 +691,42 @@ function App() {
 
   const [exporting, setExporting] = useState(false);
   const [exportMessage, setExportMessage] = useState("");
+  const [manualEntryProject, setManualEntryProject] = useState<number | null>(null);
+  const [manualEntryTask, setManualEntryTask] = useState<number | null>(null);
+  const [manualEntryDate, setManualEntryDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [manualEntryHours, setManualEntryHours] = useState("");
+  const [manualEntryMinutes, setManualEntryMinutes] = useState("");
+
+  const addManualTimeEntry = async () => {
+    if (!manualEntryProject || !manualEntryTask) return;
+
+    const hours = parseInt(manualEntryHours) || 0;
+    const minutes = parseInt(manualEntryMinutes) || 0;
+    const durationSeconds = (hours * 3600) + (minutes * 60);
+
+    if (durationSeconds < 60) return;
+
+    const dateObj = new Date(manualEntryDate);
+    dateObj.setHours(12, 0, 0, 0);
+    const startTime = Math.floor(dateObj.getTime() / 1000);
+
+    const success = await invoke<boolean>("add_time_entry_manual", {
+      projectId: manualEntryProject,
+      taskId: manualEntryTask,
+      startTime,
+      durationSeconds,
+    });
+
+    if (success) {
+      setManualEntryHours("");
+      setManualEntryMinutes("");
+      loadDatabaseData();
+      loadData();
+      posthog.capture("manual_time_entry_added");
+    }
+  };
+
+  const selectedProjectTasks = allProjectsWithStatus.find(p => p.id === manualEntryProject)?.tasks.filter(t => !t.archived_at) || [];
 
   const exportToXlsx = async () => {
     setExporting(true);
@@ -1499,6 +1535,75 @@ function App() {
                 <div key={level} className={`activity-cell level-${level}`} />
               ))}
               <span>More</span>
+            </div>
+          </div>
+
+          <div className="db-section">
+            <h3>Add Worklog Entry</h3>
+            <div className="manual-entry-form">
+              <div className="manual-entry-row">
+                <select
+                  className="manual-entry-select"
+                  value={manualEntryProject ?? ""}
+                  onChange={(e) => {
+                    const val = e.target.value ? Number(e.target.value) : null;
+                    setManualEntryProject(val);
+                    setManualEntryTask(null);
+                  }}
+                >
+                  <option value="">Select Project</option>
+                  {allProjectsWithStatus.filter(p => !p.archived_at).map(p => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+                <select
+                  className="manual-entry-select"
+                  value={manualEntryTask ?? ""}
+                  onChange={(e) => setManualEntryTask(e.target.value ? Number(e.target.value) : null)}
+                  disabled={!manualEntryProject}
+                >
+                  <option value="">Select Task</option>
+                  {selectedProjectTasks.map(t => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="manual-entry-row">
+                <input
+                  type="date"
+                  className="manual-entry-date"
+                  value={manualEntryDate}
+                  onChange={(e) => setManualEntryDate(e.target.value)}
+                />
+                <div className="manual-entry-duration">
+                  <input
+                    type="number"
+                    className="manual-entry-time"
+                    placeholder="0"
+                    min="0"
+                    value={manualEntryHours}
+                    onChange={(e) => setManualEntryHours(e.target.value)}
+                  />
+                  <span>h</span>
+                  <input
+                    type="number"
+                    className="manual-entry-time"
+                    placeholder="0"
+                    min="0"
+                    max="59"
+                    value={manualEntryMinutes}
+                    onChange={(e) => setManualEntryMinutes(e.target.value)}
+                  />
+                  <span>m</span>
+                </div>
+                <button
+                  className="manual-entry-btn"
+                  onClick={addManualTimeEntry}
+                  disabled={!manualEntryProject || !manualEntryTask || ((parseInt(manualEntryHours) || 0) === 0 && (parseInt(manualEntryMinutes) || 0) === 0)}
+                >
+                  Add
+                </button>
+              </div>
             </div>
           </div>
 

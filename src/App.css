@@ -1637,3 +1637,131 @@ body {
   padding: 6px;
 }
 
+/* Manual Entry Form */
+.manual-entry-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.manual-entry-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.manual-entry-select {
+  flex: 1;
+  padding: 8px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+}
+
+.manual-entry-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.manual-entry-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.manual-entry-select option {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.manual-entry-date {
+  flex: 1;
+  padding: 8px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+
+.manual-entry-date:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.manual-entry-date::-webkit-calendar-picker-indicator {
+  filter: invert(0.6);
+  cursor: pointer;
+}
+
+.manual-entry-duration {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.manual-entry-duration span {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.manual-entry-time {
+  width: 48px;
+  padding: 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.manual-entry-time:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.manual-entry-time::-webkit-inner-spin-button,
+.manual-entry-time::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.manual-entry-btn {
+  padding: 8px 16px;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: white;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.manual-entry-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.manual-entry-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (prefers-color-scheme: light) {
+  .manual-entry-select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23333' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  }
+
+  .manual-entry-date::-webkit-calendar-picker-indicator {
+    filter: none;
+  }
+}
+
