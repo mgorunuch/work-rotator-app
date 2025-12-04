@@ -1,3 +1,6 @@
+mod floating_panel;
+
+use floating_panel::{FloatingPanel, TimerState, pop_stopped_task, set_app_handle};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -6,8 +9,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     image::Image,
     tray::TrayIconBuilder,
-    AppHandle, Manager, State, WindowEvent,
+    AppHandle, Emitter, Manager, State, WindowEvent,
 };
+use once_cell::sync::Lazy;
+
+static FLOATING_PANEL: Lazy<FloatingPanel> = Lazy::new(FloatingPanel::new);
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Task {
@@ -859,6 +865,59 @@ fn update_tray_title(app: AppHandle, title: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn show_floating_timer() -> Result<(), String> {
+    FLOATING_PANEL.show();
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_floating_timer() -> Result<(), String> {
+    FLOATING_PANEL.hide();
+    Ok(())
+}
+
+#[tauri::command]
+fn is_floating_timer_visible() -> bool {
+    FLOATING_PANEL.is_visible()
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct FloatingTimerEntry {
+    task_id: u64,
+    project_name: String,
+    task_name: String,
+    elapsed_seconds: u64,
+}
+
+#[tauri::command]
+fn update_floating_timer(entries: Vec<FloatingTimerEntry>) -> Result<(), String> {
+    FLOATING_PANEL.update(TimerState {
+        entries: entries
+            .into_iter()
+            .map(|e| floating_panel::TimerEntry {
+                task_id: e.task_id,
+                project_name: e.project_name,
+                task_name: e.task_name,
+                elapsed_seconds: e.elapsed_seconds,
+            })
+            .collect(),
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn poll_floating_timer_stop() -> Option<u64> {
+    pop_stopped_task()
+}
+
+
+#[tauri::command]
+fn emit_tracking_updated(app: AppHandle) -> Result<(), String> {
+    app.emit("tracking-updated", ())
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct ProjectWithStatus {
     id: u64,
@@ -1163,6 +1222,9 @@ pub fn run() {
             active_tracking: Mutex::new(active_tracking),
         })
         .setup(|app| {
+            // Store app handle for floating panel to use
+            set_app_handle(app.handle().clone());
+
             // Set window height to 80% of screen
             if let Some(window) = app.get_webview_window("main") {
                 if let Some(monitor) = window.current_monitor().ok().flatten() {
@@ -1229,6 +1291,12 @@ pub fn run() {
             get_project_time_stats,
             get_all_time_entries,
             update_tray_title,
+            show_floating_timer,
+            hide_floating_timer,
+            is_floating_timer_visible,
+            update_floating_timer,
+            poll_floating_timer_stop,
+            emit_tracking_updated,
             get_all_projects_with_status,
             restore_project,
             restore_task,

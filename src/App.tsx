@@ -146,6 +146,10 @@ function App() {
     danger?: boolean;
     onConfirm: () => void;
   } | null>(null);
+  const [floatingTimerEnabled, setFloatingTimerEnabled] = useState(() => {
+    const saved = localStorage.getItem("floatingTimerEnabled");
+    return saved ? JSON.parse(saved) : false;
+  });
 
   const loadData = useCallback(async () => {
     const loadedProjects = await invoke<Project[]>("get_projects");
@@ -183,6 +187,7 @@ function App() {
             await invoke<number | null>("stop_tracking", { taskId: null });
             setActiveTracking([]);
             setElapsedTimes({});
+            invoke("emit_tracking_updated").catch(console.error);
             const loadedProjects = await invoke<Project[]>("get_projects");
             setProjects(loadedProjects);
           } else {
@@ -207,6 +212,7 @@ function App() {
                 if (tracking.length > 0) {
                   setElapsedTimes({});
                   posthog.capture("timer_started", { source: "hotkey" });
+                  invoke("emit_tracking_updated").catch(console.error);
                 }
               }
             }
@@ -224,6 +230,50 @@ function App() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    if (floatingTimerEnabled) {
+      invoke("show_floating_timer").catch(console.error);
+
+      // Poll for floating timer interactions (stop/open) regardless of active timers
+      const pollInterval = setInterval(() => {
+        invoke<number | null>("poll_floating_timer_stop").then(taskId => {
+          if (taskId !== null) {
+            // Immediately update floating timer (optimistic update for instant feedback)
+            const now = Math.floor(Date.now() / 1000);
+            const remainingEntries = activeTracking
+              .filter(t => t.task_id !== taskId)
+              .map(t => {
+                const project = projects.find(p => p.id === t.project_id);
+                const task = project?.tasks.find(task => task.id === t.task_id);
+                return {
+                  task_id: t.task_id,
+                  project_name: project?.name || "",
+                  task_name: task?.name || "",
+                  elapsed_seconds: now - t.started_at,
+                };
+              });
+            invoke("update_floating_timer", { entries: remainingEntries }).catch(console.error);
+
+            // Run backend operations in parallel
+            invoke("stop_tracking", { taskId }).then(() => {
+              Promise.all([
+                invoke<Project[]>("get_projects"),
+                invoke<ActiveTracking[]>("get_active_tracking")
+              ]).then(([newProjects, newTracking]) => {
+                setProjects(newProjects);
+                setActiveTracking(newTracking);
+              });
+            });
+          }
+        }).catch(console.error);
+      }, 100); // Poll for stop requests
+
+      return () => clearInterval(pollInterval);
+    } else {
+      invoke("hide_floating_timer").catch(console.error);
+    }
+  }, [floatingTimerEnabled, activeTracking, projects]);
 
   useEffect(() => {
     posthog.capture("$pageview", { view: currentView });
@@ -250,20 +300,40 @@ function App() {
   useEffect(() => {
     if (activeTracking.length === 0) {
       setElapsedTimes({});
+      if (floatingTimerEnabled) {
+        invoke("update_floating_timer", { entries: [] }).catch(console.error);
+      }
       return;
     }
 
-    const interval = setInterval(() => {
+    const updateTimer = () => {
       const now = Math.floor(Date.now() / 1000);
       const newElapsed: Record<number, number> = {};
       activeTracking.forEach(t => {
         newElapsed[t.task_id] = now - t.started_at;
       });
       setElapsedTimes(newElapsed);
-    }, 1000);
+
+      if (floatingTimerEnabled) {
+        const entries = activeTracking.map(t => {
+          const project = projects.find(p => p.id === t.project_id);
+          const task = project?.tasks.find(task => task.id === t.task_id);
+          return {
+            task_id: t.task_id,
+            project_name: project?.name || "",
+            task_name: task?.name || "",
+            elapsed_seconds: newElapsed[t.task_id] || 0,
+          };
+        });
+        invoke("update_floating_timer", { entries }).catch(console.error);
+      }
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
 
     return () => clearInterval(interval);
-  }, [activeTracking]);
+  }, [activeTracking, floatingTimerEnabled, projects]);
 
   // Update system tray title
   useEffect(() => {
@@ -416,6 +486,7 @@ function App() {
     setActiveTracking(tracking);
     if (tracking.length > 0) {
       posthog.capture("timer_started");
+      invoke("emit_tracking_updated").catch(console.error);
     }
   };
 
@@ -434,6 +505,7 @@ function App() {
       setActiveTracking([]);
       setElapsedTimes({});
     }
+    invoke("emit_tracking_updated").catch(console.error);
     await loadData();
   };
 
@@ -1168,6 +1240,26 @@ function App() {
                   <span className="toggle-thumb"></span>
                 </span>
                 <span className="toggle-label">{trackingSettings.allowMultipleTasks ? "Enabled" : "Disabled"}</span>
+              </button>
+            </div>
+            <div className="tracking-toggle-container">
+              <div className="tracking-toggle-info">
+                <span className="tracking-toggle-label">Floating Timer</span>
+                <span className="tracking-toggle-description">Show always-on-top timer widget</span>
+              </div>
+              <button
+                className={`ads-toggle ${floatingTimerEnabled ? "enabled" : ""}`}
+                onClick={() => {
+                  const newValue = !floatingTimerEnabled;
+                  setFloatingTimerEnabled(newValue);
+                  localStorage.setItem("floatingTimerEnabled", JSON.stringify(newValue));
+                  posthog.capture(newValue ? "floating_timer_enabled" : "floating_timer_disabled");
+                }}
+              >
+                <span className="toggle-track">
+                  <span className="toggle-thumb"></span>
+                </span>
+                <span className="toggle-label">{floatingTimerEnabled ? "Enabled" : "Disabled"}</span>
               </button>
             </div>
           </div>
