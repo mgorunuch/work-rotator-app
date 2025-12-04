@@ -42,6 +42,43 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
+          includeRelease: false
+          includeUpdaterJson: false
+
+      - name: Get arch suffix
+        id: arch
+        run: |
+          if [[ "${{ matrix.target }}" == "aarch64-apple-darwin" ]]; then
+            echo "suffix=aarch64" >> $GITHUB_OUTPUT
+          else
+            echo "suffix=x64" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Rename and upload artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ARCH="${{ steps.arch.outputs.suffix }}"
+
+          # Create release if it doesn't exist
+          gh release view "${{ github.ref_name }}" || \
+            gh release create "${{ github.ref_name }}" \
+              --title "Rotator ${{ github.ref_name }}" \
+              --notes "See the assets below to download and install."
+
+          # Find and rename DMG
+          DMG_PATH=$(find src-tauri/target -name "*.dmg" | head -1)
+          if [ -n "$DMG_PATH" ]; then
+            cp "$DMG_PATH" "Rotator_${ARCH}.dmg"
+            gh release upload "${{ github.ref_name }}" "Rotator_${ARCH}.dmg" --clobber
+          fi
+
+          # Find and rename app.tar.gz
+          TARGZ_PATH=$(find src-tauri/target -name "*.app.tar.gz" | head -1)
+          if [ -n "$TARGZ_PATH" ]; then
+            cp "$TARGZ_PATH" "Rotator_${ARCH}.app.tar.gz"
+            gh release upload "${{ github.ref_name }}" "Rotator_${ARCH}.app.tar.gz" --clobber
+          fi
 
   update-homebrew:
     needs: build-macos
@@ -60,14 +97,14 @@ jobs:
       - name: Download and hash ARM DMG
         id: arm_hash
         run: |
-          curl -L -o arm.dmg "https://github.com/mgorunuch/work-rotator-app/releases/download/${{ github.ref_name }}/Rotator_${{ steps.version.outputs.version }}_aarch64.dmg"
+          curl -L -o arm.dmg "https://github.com/mgorunuch/work-rotator-app/releases/download/${{ github.ref_name }}/Rotator_aarch64.dmg"
           HASH=$(sha256sum arm.dmg | cut -d ' ' -f 1)
           echo "sha256=$HASH" >> $GITHUB_OUTPUT
 
       - name: Download and hash Intel DMG
         id: intel_hash
         run: |
-          curl -L -o intel.dmg "https://github.com/mgorunuch/work-rotator-app/releases/download/${{ github.ref_name }}/Rotator_${{ steps.version.outputs.version }}_x86_64.dmg"
+          curl -L -o intel.dmg "https://github.com/mgorunuch/work-rotator-app/releases/download/${{ github.ref_name }}/Rotator_x64.dmg"
           HASH=$(sha256sum intel.dmg | cut -d ' ' -f 1)
           echo "sha256=$HASH" >> $GITHUB_OUTPUT
 
@@ -88,7 +125,7 @@ jobs:
             sha256 arm:   "${{ steps.arm_hash.outputs.sha256 }}",
                    intel: "${{ steps.intel_hash.outputs.sha256 }}"
 
-            url "https://github.com/mgorunuch/work-rotator-app/releases/download/v#{version}/Rotator_#{version}_#{arch}.dmg"
+            url "https://github.com/mgorunuch/work-rotator-app/releases/download/v#{version}/Rotator_#{arch}.dmg"
             name "Rotator"
             desc "Work rotation timer app"
             homepage "https://github.com/mgorunuch/work-rotator-app"
