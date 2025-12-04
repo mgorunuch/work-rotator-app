@@ -773,6 +773,7 @@ body {
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: all 0.2s;
+  flex-shrink: 0;
 }
 
 .ads-toggle:hover {
@@ -1557,12 +1558,17 @@ body {
 /* Tracking Settings Toggle */
 .tracking-toggle-container {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
   padding: 12px 16px;
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
+}
+
+.tracking-toggle-container + .tracking-toggle-container {
+  margin-top: 10px;
 }
 
 .tracking-toggle-info {

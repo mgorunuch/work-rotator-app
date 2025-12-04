@@ -32,18 +32,7 @@ jobs:
         run: bun install
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Rotator ${{ github.ref_name }}'
-          releaseBody: 'See the assets below to download and install.'
-          releaseDraft: false
-          prerelease: false
-          args: --target ${{ matrix.target }}
-          includeRelease: false
-          includeUpdaterJson: false
+        run: bunx tauri build --target ${{ matrix.target }}
 
       - name: Get arch suffix
         id: arch

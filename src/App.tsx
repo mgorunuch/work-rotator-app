@@ -150,6 +150,10 @@ function App() {
     const saved = localStorage.getItem("floatingTimerEnabled");
     return saved ? JSON.parse(saved) : false;
   });
+  const [menubarTitleEnabled, setMenubarTitleEnabled] = useState(() => {
+    const saved = localStorage.getItem("menubarTitleEnabled");
+    return saved ? JSON.parse(saved) : true;
+  });
 
   const loadData = useCallback(async () => {
     const loadedProjects = await invoke<Project[]>("get_projects");
@@ -339,32 +343,35 @@ function App() {
   useEffect(() => {
     const updateTray = async () => {
       let title = "";
-      const truncateName = (name: string, maxLen = 20) =>
-        name.length > maxLen ? name.slice(0, maxLen) + "…" : name;
 
-      if (currentProject) {
-        const activeTasks = currentProject.tasks.filter(t => t.done_at === null);
-        const currentTask = activeTasks.length > 0
-          ? activeTasks[currentProject.current_task_index % activeTasks.length]
-          : null;
+      if (menubarTitleEnabled) {
+        const truncateName = (name: string, maxLen = 20) =>
+          name.length > maxLen ? name.slice(0, maxLen) + "…" : name;
 
-        if (activeTracking.length > 0) {
-          // Show first active task in tray (most recent)
-          const t = activeTracking[0];
-          const project = projects.find(p => p.id === t.project_id);
-          const task = project?.tasks.find(tk => tk.id === t.task_id);
-          const taskName = task ? task.name : "";
-          const projectName = project ? project.name : "";
-          const elapsed = elapsedTimes[t.task_id] || 0;
-          const suffix = activeTracking.length > 1 ? ` +${activeTracking.length - 1}` : "";
-          title = `[${truncateName(projectName, 8)}] ${truncateName(taskName, 10)}${suffix} │ ${formatTime(elapsed)}`;
-        } else if (currentTask) {
-          title = `[${truncateName(currentProject.name, 10)}] ${truncateName(currentTask.name, 15)}`;
+        if (currentProject) {
+          const activeTasks = currentProject.tasks.filter(t => t.done_at === null);
+          const currentTask = activeTasks.length > 0
+            ? activeTasks[currentProject.current_task_index % activeTasks.length]
+            : null;
+
+          if (activeTracking.length > 0) {
+            // Show first active task in tray (most recent)
+            const t = activeTracking[0];
+            const project = projects.find(p => p.id === t.project_id);
+            const task = project?.tasks.find(tk => tk.id === t.task_id);
+            const taskName = task ? task.name : "";
+            const projectName = project ? project.name : "";
+            const elapsed = elapsedTimes[t.task_id] || 0;
+            const suffix = activeTracking.length > 1 ? ` +${activeTracking.length - 1}` : "";
+            title = `[${truncateName(projectName, 8)}] ${truncateName(taskName, 10)}${suffix} │ ${formatTime(elapsed)}`;
+          } else if (currentTask) {
+            title = `[${truncateName(currentProject.name, 10)}] ${truncateName(currentTask.name, 15)}`;
+          } else {
+            title = truncateName(currentProject.name, 25);
+          }
         } else {
-          title = truncateName(currentProject.name, 25);
+          title = "Rotator";
         }
-      } else {
-        title = "Rotator";
       }
 
       try {
@@ -375,7 +382,7 @@ function App() {
     };
 
     updateTray();
-  }, [activeTracking, elapsedTimes, currentProject, currentProjectIndex, projects.length, projects]);
+  }, [activeTracking, elapsedTimes, currentProject, currentProjectIndex, projects.length, projects, menubarTitleEnabled]);
 
   useEffect(() => {
     if (!adsEnabled) {
@@ -1296,6 +1303,26 @@ function App() {
                   <span className="toggle-thumb"></span>
                 </span>
                 <span className="toggle-label">{floatingTimerEnabled ? "Enabled" : "Disabled"}</span>
+              </button>
+            </div>
+            <div className="tracking-toggle-container">
+              <div className="tracking-toggle-info">
+                <span className="tracking-toggle-label">Menubar Title</span>
+                <span className="tracking-toggle-description">Show task info in macOS menubar</span>
+              </div>
+              <button
+                className={`ads-toggle ${menubarTitleEnabled ? "enabled" : ""}`}
+                onClick={() => {
+                  const newValue = !menubarTitleEnabled;
+                  setMenubarTitleEnabled(newValue);
+                  localStorage.setItem("menubarTitleEnabled", JSON.stringify(newValue));
+                  posthog.capture(newValue ? "menubar_title_enabled" : "menubar_title_disabled");
+                }}
+              >
+                <span className="toggle-track">
+                  <span className="toggle-thumb"></span>
+                </span>
+                <span className="toggle-label">{menubarTitleEnabled ? "Enabled" : "Disabled"}</span>
               </button>
             </div>
           </div>
