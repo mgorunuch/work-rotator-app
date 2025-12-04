@@ -67,14 +67,15 @@ struct AppState {
     current_project_index: Mutex<usize>,
     next_project_id: Mutex<u64>,
     next_task_id: Mutex<u64>,
-    active_tracking: Mutex<Option<ActiveTracking>>,
+    active_tracking: Mutex<Vec<ActiveTracking>>,
 }
 
 fn get_db_path() -> PathBuf {
+    let db_name = std::env::var("ROTATOR_DB_NAME").unwrap_or_else(|_| "rotator.db".to_string());
     let mut path = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
     path.push("rotator");
     std::fs::create_dir_all(&path).ok();
-    path.push("rotator.db");
+    path.push(db_name);
     path
 }
 
@@ -164,13 +165,31 @@ fn init_db(conn: &Connection) {
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS active_tracking (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
+            id INTEGER PRIMARY KEY,
             project_id INTEGER NOT NULL,
             task_id INTEGER NOT NULL,
             started_at INTEGER NOT NULL
         )",
         [],
     ).expect("Failed to create active_tracking table");
+
+    // Migration: Remove single-row constraint for multi-task tracking
+    // This is handled by recreating the table if the constraint exists
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS active_tracking_new (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            task_id INTEGER NOT NULL,
+            started_at INTEGER NOT NULL
+        )",
+        [],
+    ).ok();
+    conn.execute(
+        "INSERT OR IGNORE INTO active_tracking_new SELECT * FROM active_tracking",
+        [],
+    ).ok();
+    conn.execute("DROP TABLE IF EXISTS active_tracking", []).ok();
+    conn.execute("ALTER TABLE active_tracking_new RENAME TO active_tracking", []).ok();
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS time_entries (
@@ -255,28 +274,33 @@ fn get_next_id(conn: &Connection, table: &str) -> u64 {
     ).unwrap_or(1)
 }
 
-fn load_active_tracking(conn: &Connection) -> Option<ActiveTracking> {
-    conn.query_row(
-        "SELECT project_id, task_id, started_at FROM active_tracking WHERE id = 1",
-        [],
-        |row| {
-            Ok(ActiveTracking {
-                project_id: row.get(0)?,
-                task_id: row.get(1)?,
-                started_at: row.get(2)?,
-            })
-        },
-    ).ok()
+fn load_active_tracking(conn: &Connection) -> Vec<ActiveTracking> {
+    let mut stmt = conn.prepare(
+        "SELECT project_id, task_id, started_at FROM active_tracking"
+    ).unwrap();
+    let tracking_iter = stmt.query_map([], |row| {
+        Ok(ActiveTracking {
+            project_id: row.get(0)?,
+            task_id: row.get(1)?,
+            started_at: row.get(2)?,
+        })
+    }).unwrap();
+    tracking_iter.filter_map(|t| t.ok()).collect()
 }
 
-fn save_active_tracking(conn: &Connection, tracking: Option<&ActiveTracking>) {
-    conn.execute("DELETE FROM active_tracking WHERE id = 1", []).ok();
-    if let Some(t) = tracking {
-        conn.execute(
-            "INSERT INTO active_tracking (id, project_id, task_id, started_at) VALUES (1, ?, ?, ?)",
-            params![t.project_id, t.task_id, t.started_at],
-        ).ok();
-    }
+fn add_active_tracking(conn: &Connection, tracking: &ActiveTracking) {
+    conn.execute(
+        "INSERT INTO active_tracking (project_id, task_id, started_at) VALUES (?, ?, ?)",
+        params![tracking.project_id, tracking.task_id, tracking.started_at],
+    ).ok();
+}
+
+fn remove_active_tracking(conn: &Connection, task_id: u64) {
+    conn.execute("DELETE FROM active_tracking WHERE task_id = ?", [task_id]).ok();
+}
+
+fn clear_all_active_tracking(conn: &Connection) {
+    conn.execute("DELETE FROM active_tracking", []).ok();
 }
 
 fn now_seconds() -> u64 {
@@ -328,12 +352,15 @@ fn remove_project(project_id: u64, state: State<AppState>) -> Vec<Project> {
     let db = state.db.lock().unwrap();
 
     if let Some(pos) = projects.iter().position(|p| p.id == project_id) {
-        if let Some(ref t) = *tracking {
+        // Remove all active tracking for this project's tasks
+        tracking.retain(|t| {
             if t.project_id == project_id {
-                *tracking = None;
-                save_active_tracking(&db, None);
+                remove_active_tracking(&db, t.task_id);
+                false
+            } else {
+                true
             }
-        }
+        });
 
         // Archive instead of delete - set archived_at to current timestamp
         let now = now_seconds();
@@ -454,11 +481,10 @@ fn remove_task(project_id: u64, task_id: u64, state: State<AppState>) -> Option<
     let db = state.db.lock().unwrap();
 
     if let Some(project) = projects.iter_mut().find(|p| p.id == project_id) {
-        if let Some(ref t) = *tracking {
-            if t.project_id == project_id && t.task_id == task_id {
-                *tracking = None;
-                save_active_tracking(&db, None);
-            }
+        // Remove active tracking for this task if it exists
+        if tracking.iter().any(|t| t.task_id == task_id) {
+            tracking.retain(|t| t.task_id != task_id);
+            remove_active_tracking(&db, task_id);
         }
 
         if let Some(pos) = project.tasks.iter().position(|t| t.id == task_id) {
@@ -518,16 +544,22 @@ fn rename_task(project_id: u64, task_id: u64, new_name: String, state: State<App
 }
 
 #[tauri::command]
-fn start_tracking(project_id: u64, task_id: u64, state: State<AppState>) -> Option<ActiveTracking> {
+fn start_tracking(project_id: u64, task_id: u64, allow_multiple: bool, state: State<AppState>) -> Vec<ActiveTracking> {
     let projects = state.projects.lock().unwrap();
     let mut tracking = state.active_tracking.lock().unwrap();
     let db = state.db.lock().unwrap();
 
-    if tracking.is_some() {
+    // Check if this task is already being tracked
+    if tracking.iter().any(|t| t.task_id == task_id) {
+        return tracking.clone();
+    }
+
+    // If not allowing multiple and there are existing trackings, stop them first
+    if !allow_multiple && !tracking.is_empty() {
         drop(tracking);
         drop(projects);
         drop(db);
-        stop_tracking_internal(&state);
+        stop_all_tracking_internal(&state);
         return start_tracking_internal(project_id, task_id, &state);
     }
 
@@ -537,15 +569,15 @@ fn start_tracking(project_id: u64, task_id: u64, state: State<AppState>) -> Opti
             task_id,
             started_at: now_seconds(),
         };
-        save_active_tracking(&db, Some(&new_tracking));
-        *tracking = Some(new_tracking.clone());
-        return Some(new_tracking);
+        add_active_tracking(&db, &new_tracking);
+        tracking.push(new_tracking);
+        return tracking.clone();
     }
 
-    None
+    tracking.clone()
 }
 
-fn start_tracking_internal(project_id: u64, task_id: u64, state: &State<AppState>) -> Option<ActiveTracking> {
+fn start_tracking_internal(project_id: u64, task_id: u64, state: &State<AppState>) -> Vec<ActiveTracking> {
     let projects = state.projects.lock().unwrap();
     let mut tracking = state.active_tracking.lock().unwrap();
     let db = state.db.lock().unwrap();
@@ -556,20 +588,54 @@ fn start_tracking_internal(project_id: u64, task_id: u64, state: &State<AppState
             task_id,
             started_at: now_seconds(),
         };
-        save_active_tracking(&db, Some(&new_tracking));
-        *tracking = Some(new_tracking.clone());
-        return Some(new_tracking);
+        add_active_tracking(&db, &new_tracking);
+        tracking.push(new_tracking);
+        return tracking.clone();
     }
 
-    None
+    tracking.clone()
 }
 
-fn stop_tracking_internal(state: &State<AppState>) -> Option<u64> {
+fn stop_all_tracking_internal(state: &State<AppState>) {
     let mut projects = state.projects.lock().unwrap();
     let mut tracking = state.active_tracking.lock().unwrap();
     let db = state.db.lock().unwrap();
 
-    if let Some(ref t) = *tracking {
+    let end_time = now_seconds();
+
+    for t in tracking.iter() {
+        let elapsed = end_time - t.started_at;
+
+        // Only save if elapsed >= 3 seconds
+        if elapsed >= 3 {
+            if let Some(project) = projects.iter_mut().find(|p| p.id == t.project_id) {
+                if let Some(task) = project.tasks.iter_mut().find(|tk| tk.id == t.task_id) {
+                    task.time_seconds += elapsed;
+                    db.execute(
+                        "UPDATE tasks SET time_seconds = ? WHERE id = ?",
+                        params![task.time_seconds, task.id],
+                    ).ok();
+
+                    // Save time entry
+                    db.execute(
+                        "INSERT INTO time_entries (project_id, task_id, start_time, end_time, duration_seconds) VALUES (?, ?, ?, ?, ?)",
+                        params![t.project_id, t.task_id, t.started_at, end_time, elapsed],
+                    ).ok();
+                }
+            }
+        }
+    }
+
+    clear_all_active_tracking(&db);
+    tracking.clear();
+}
+
+fn stop_tracking_for_task_internal(state: &State<AppState>, task_id: u64) -> Option<u64> {
+    let mut projects = state.projects.lock().unwrap();
+    let mut tracking = state.active_tracking.lock().unwrap();
+    let db = state.db.lock().unwrap();
+
+    if let Some(t) = tracking.iter().find(|t| t.task_id == task_id).cloned() {
         let end_time = now_seconds();
         let elapsed = end_time - t.started_at;
 
@@ -592,8 +658,8 @@ fn stop_tracking_internal(state: &State<AppState>) -> Option<u64> {
             }
         }
 
-        save_active_tracking(&db, None);
-        *tracking = None;
+        remove_active_tracking(&db, task_id);
+        tracking.retain(|t| t.task_id != task_id);
         return Some(elapsed);
     }
 
@@ -601,14 +667,27 @@ fn stop_tracking_internal(state: &State<AppState>) -> Option<u64> {
 }
 
 #[tauri::command]
-fn stop_tracking(state: State<AppState>) -> Option<u64> {
+fn stop_tracking(task_id: Option<u64>, state: State<AppState>) -> Option<u64> {
+    // If task_id is provided, stop only that task
+    if let Some(tid) = task_id {
+        return stop_tracking_for_task_internal(&state, tid);
+    }
+
+    // Otherwise stop all tracking
     let mut projects = state.projects.lock().unwrap();
     let mut tracking = state.active_tracking.lock().unwrap();
     let db = state.db.lock().unwrap();
 
-    if let Some(ref t) = *tracking {
-        let end_time = now_seconds();
+    if tracking.is_empty() {
+        return None;
+    }
+
+    let end_time = now_seconds();
+    let mut total_elapsed: u64 = 0;
+
+    for t in tracking.iter() {
         let elapsed = end_time - t.started_at;
+        total_elapsed += elapsed;
 
         // Only save if elapsed >= 3 seconds
         if elapsed >= 3 {
@@ -628,17 +707,15 @@ fn stop_tracking(state: State<AppState>) -> Option<u64> {
                 }
             }
         }
-
-        save_active_tracking(&db, None);
-        *tracking = None;
-        return Some(elapsed);
     }
 
-    None
+    clear_all_active_tracking(&db);
+    tracking.clear();
+    Some(total_elapsed)
 }
 
 #[tauri::command]
-fn get_active_tracking(state: State<AppState>) -> Option<ActiveTracking> {
+fn get_active_tracking(state: State<AppState>) -> Vec<ActiveTracking> {
     state.active_tracking.lock().unwrap().clone()
 }
 
@@ -949,7 +1026,7 @@ fn reset_database(state: State<AppState>) -> Vec<Project> {
     *current_index = 0;
     *next_project_id = 1;
     *next_task_id = 1;
-    *tracking = None;
+    tracking.clear();
 
     projects.clone()
 }

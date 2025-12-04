@@ -21,6 +21,10 @@ interface HotkeySettings {
   stopHotkey: string;
 }
 
+interface TrackingSettings {
+  allowMultipleTasks: boolean;
+}
+
 interface Task {
   id: number;
   name: string;
@@ -108,8 +112,12 @@ function App() {
   const [newProjectName, setNewProjectName] = useState("");
   const [newTaskNames, setNewTaskNames] = useState<Record<number, string>>({});
   const [_hotkeyRegistered, setHotkeyRegistered] = useState(false);
-  const [activeTracking, setActiveTracking] = useState<ActiveTracking | null>(null);
-  const [elapsedTime, setElapsedTime] = useState(0);
+  const [activeTracking, setActiveTracking] = useState<ActiveTracking[]>([]);
+  const [elapsedTimes, setElapsedTimes] = useState<Record<number, number>>({});
+  const [trackingSettings, setTrackingSettings] = useState<TrackingSettings>(() => {
+    const saved = localStorage.getItem("trackingSettings");
+    return saved ? JSON.parse(saved) : { allowMultipleTasks: false };
+  });
   const [currentView, setCurrentView] = useState<View>("main");
   const [adsEnabled, setAdsEnabled] = useState(() => {
     const saved = localStorage.getItem("adsEnabled");
@@ -142,7 +150,7 @@ function App() {
   const loadData = useCallback(async () => {
     const loadedProjects = await invoke<Project[]>("get_projects");
     const index = await invoke<number>("get_current_project_index");
-    const tracking = await invoke<ActiveTracking | null>("get_active_tracking");
+    const tracking = await invoke<ActiveTracking[]>("get_active_tracking");
     setProjects(loadedProjects);
     setCurrentProjectIndex(index);
     setActiveTracking(tracking);
@@ -169,11 +177,12 @@ function App() {
       });
       await register(hotkeySettings.stopHotkey, async (event) => {
         if (event.state === "Pressed") {
-          const currentTracking = await invoke<ActiveTracking | null>("get_active_tracking");
-          if (currentTracking) {
+          const currentTracking = await invoke<ActiveTracking[]>("get_active_tracking");
+          if (currentTracking.length > 0) {
             posthog.capture("timer_stopped", { source: "hotkey" });
-            await invoke<number | null>("stop_tracking");
-            setActiveTracking(null);
+            await invoke<number | null>("stop_tracking", { taskId: null });
+            setActiveTracking([]);
+            setElapsedTimes({});
             const loadedProjects = await invoke<Project[]>("get_projects");
             setProjects(loadedProjects);
           } else {
@@ -187,13 +196,16 @@ function App() {
                 ? activeTasks[project.current_task_index % activeTasks.length]
                 : null;
               if (currentTask) {
-                const tracking = await invoke<ActiveTracking | null>("start_tracking", {
+                const savedSettings = localStorage.getItem("trackingSettings");
+                const settings = savedSettings ? JSON.parse(savedSettings) : { allowMultipleTasks: false };
+                const tracking = await invoke<ActiveTracking[]>("start_tracking", {
                   projectId: project.id,
                   taskId: currentTask.id,
+                  allowMultiple: settings.allowMultipleTasks,
                 });
                 setActiveTracking(tracking);
-                if (tracking) {
-                  setElapsedTime(0);
+                if (tracking.length > 0) {
+                  setElapsedTimes({});
                   posthog.capture("timer_started", { source: "hotkey" });
                 }
               }
@@ -236,14 +248,18 @@ function App() {
   }, [registerHotkeys, hotkeySettings, currentView]);
 
   useEffect(() => {
-    if (!activeTracking) {
-      setElapsedTime(0);
+    if (activeTracking.length === 0) {
+      setElapsedTimes({});
       return;
     }
 
     const interval = setInterval(() => {
       const now = Math.floor(Date.now() / 1000);
-      setElapsedTime(now - activeTracking.started_at);
+      const newElapsed: Record<number, number> = {};
+      activeTracking.forEach(t => {
+        newElapsed[t.task_id] = now - t.started_at;
+      });
+      setElapsedTimes(newElapsed);
     }, 1000);
 
     return () => clearInterval(interval);
@@ -262,10 +278,16 @@ function App() {
           ? activeTasks[currentProject.current_task_index % activeTasks.length]
           : null;
 
-        if (activeTracking) {
-          const task = currentProject.tasks.find(t => t.id === activeTracking.task_id);
+        if (activeTracking.length > 0) {
+          // Show first active task in tray (most recent)
+          const t = activeTracking[0];
+          const project = projects.find(p => p.id === t.project_id);
+          const task = project?.tasks.find(tk => tk.id === t.task_id);
           const taskName = task ? task.name : "";
-          title = `[${truncateName(currentProject.name, 10)}] ${truncateName(taskName, 12)} │ ${formatTime(elapsedTime)}`;
+          const projectName = project ? project.name : "";
+          const elapsed = elapsedTimes[t.task_id] || 0;
+          const suffix = activeTracking.length > 1 ? ` +${activeTracking.length - 1}` : "";
+          title = `[${truncateName(projectName, 8)}] ${truncateName(taskName, 10)}${suffix} │ ${formatTime(elapsed)}`;
         } else if (currentTask) {
           title = `[${truncateName(currentProject.name, 10)}] ${truncateName(currentTask.name, 15)}`;
         } else {
@@ -283,7 +305,7 @@ function App() {
     };
 
     updateTray();
-  }, [activeTracking, elapsedTime, currentProject, currentProjectIndex, projects.length]);
+  }, [activeTracking, elapsedTimes, currentProject, currentProjectIndex, projects.length, projects]);
 
   useEffect(() => {
     if (!adsEnabled) {
@@ -351,7 +373,7 @@ function App() {
     setProjects(updated);
     const newIndex = await invoke<number>("get_current_project_index");
     setCurrentProjectIndex(newIndex);
-    const tracking = await invoke<ActiveTracking | null>("get_active_tracking");
+    const tracking = await invoke<ActiveTracking[]>("get_active_tracking");
     setActiveTracking(tracking);
     posthog.capture("project_archived");
   };
@@ -372,7 +394,7 @@ function App() {
     if (updated) {
       setProjects(projects.map(p => p.id === projectId ? updated : p));
     }
-    const tracking = await invoke<ActiveTracking | null>("get_active_tracking");
+    const tracking = await invoke<ActiveTracking[]>("get_active_tracking");
     setActiveTracking(tracking);
     posthog.capture("task_archived");
   };
@@ -386,18 +408,32 @@ function App() {
   };
 
   const startTracking = async (projectId: number, taskId: number) => {
-    const tracking = await invoke<ActiveTracking | null>("start_tracking", { projectId, taskId });
+    const tracking = await invoke<ActiveTracking[]>("start_tracking", {
+      projectId,
+      taskId,
+      allowMultiple: trackingSettings.allowMultipleTasks,
+    });
     setActiveTracking(tracking);
-    if (tracking) {
-      setElapsedTime(0);
+    if (tracking.length > 0) {
       posthog.capture("timer_started");
     }
   };
 
-  const stopTracking = async () => {
-    posthog.capture("timer_stopped", { duration_seconds: elapsedTime });
-    await invoke<number | null>("stop_tracking");
-    setActiveTracking(null);
+  const stopTracking = async (taskId?: number) => {
+    const elapsed = taskId ? elapsedTimes[taskId] : Object.values(elapsedTimes).reduce((sum, t) => sum + t, 0);
+    posthog.capture("timer_stopped", { duration_seconds: elapsed });
+    await invoke<number | null>("stop_tracking", { taskId: taskId ?? null });
+    if (taskId) {
+      setActiveTracking(prev => prev.filter(t => t.task_id !== taskId));
+      setElapsedTimes(prev => {
+        const newTimes = { ...prev };
+        delete newTimes[taskId];
+        return newTimes;
+      });
+    } else {
+      setActiveTracking([]);
+      setElapsedTimes({});
+    }
     await loadData();
   };
 
@@ -425,10 +461,15 @@ function App() {
   };
 
   const getTaskTime = (task: Task): number => {
-    if (activeTracking?.task_id === task.id) {
-      return task.time_seconds + elapsedTime;
+    const trackingEntry = activeTracking.find(t => t.task_id === task.id);
+    if (trackingEntry) {
+      return task.time_seconds + (elapsedTimes[task.id] || 0);
     }
     return task.time_seconds;
+  };
+
+  const isTaskTracking = (taskId: number): boolean => {
+    return activeTracking.some(t => t.task_id === taskId);
   };
 
   const getProjectTotalTime = (project: Project): number =>
@@ -741,7 +782,8 @@ function App() {
               ? activeTasks[currentProject.current_task_index % activeTasks.length]
               : null;
             if (!currentTask) return null;
-            const isTracking = activeTracking?.project_id === currentProject.id && activeTracking?.task_id === currentTask.id;
+            const isCurrentTaskTracking = isTaskTracking(currentTask.id);
+            const totalActiveCount = activeTracking.length;
             return (
               <>
                 <div className="current-section task-section" onClick={rotateTask}>
@@ -754,10 +796,10 @@ function App() {
                 </div>
                 <div className="tracking-controls">
                   <button
-                    className={`track-btn large ${isTracking ? "stop" : "start"}`}
-                    onClick={() => isTracking ? stopTracking() : startTracking(currentProject.id, currentTask.id)}
+                    className={`track-btn large ${isCurrentTaskTracking ? "stop" : "start"}`}
+                    onClick={() => isCurrentTaskTracking ? stopTracking(currentTask.id) : startTracking(currentProject.id, currentTask.id)}
                   >
-                    {isTracking ? (
+                    {isCurrentTaskTracking ? (
                       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                         <rect x="6" y="6" width="12" height="12" rx="2"></rect>
                       </svg>
@@ -767,9 +809,47 @@ function App() {
                       </svg>
                     )}
                   </button>
-                  <span className="session-time">{isTracking ? formatTime(elapsedTime) : "00:00:00"}</span>
+                  <span className="session-time">
+                    {isCurrentTaskTracking
+                      ? formatTime(elapsedTimes[currentTask.id] || 0)
+                      : "00:00:00"}
+                  </span>
                   <span className="hotkey-badge stop-hotkey">{formatHotkeyShort(hotkeySettings.stopHotkey)}</span>
                 </div>
+                {totalActiveCount > 0 && (
+                  <div className="active-tracking-list">
+                    {activeTracking.map(t => {
+                      const project = projects.find(p => p.id === t.project_id);
+                      const task = project?.tasks.find(tk => tk.id === t.task_id);
+                      if (!task) return null;
+                      return (
+                        <div key={t.task_id} className="active-tracking-item">
+                          <div className="active-tracking-info">
+                            <span className="active-tracking-project">{project?.name}</span>
+                            <span className="active-tracking-task">{task.name}</span>
+                          </div>
+                          <span className="active-tracking-time">{formatTime(elapsedTimes[t.task_id] || 0)}</span>
+                          <button
+                            className="track-btn stop small"
+                            onClick={() => stopTracking(t.task_id)}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                              <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+                            </svg>
+                          </button>
+                        </div>
+                      );
+                    })}
+                    {totalActiveCount > 1 && (
+                      <button
+                        className="stop-all-btn"
+                        onClick={() => stopTracking()}
+                      >
+                        Stop All ({totalActiveCount})
+                      </button>
+                    )}
+                  </div>
+                )}
               </>
             );
           })()}
@@ -902,7 +982,7 @@ function App() {
                             const bDone = b.done_at !== null ? 1 : 0;
                             return aDone - bDone;
                           }).map((task) => {
-                            const isTracking = activeTracking?.project_id === project.id && activeTracking?.task_id === task.id;
+                            const isTracking = isTaskTracking(task.id);
                             const isDone = task.done_at !== null;
                             const isSelected = task.id === currentTaskId && index === currentProjectIndex;
                             return (
@@ -962,7 +1042,7 @@ function App() {
                               <span className="task-time">{formatTime(getTaskTime(task))}</span>
                               <button
                                 className={`track-btn ${isTracking ? "stop" : "start"}`}
-                                onClick={() => isTracking ? stopTracking() : startTracking(project.id, task.id)}
+                                onClick={() => isTracking ? stopTracking(task.id) : startTracking(project.id, task.id)}
                               >
                                 {isTracking ? (
                                   <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -1066,6 +1146,32 @@ function App() {
       ) : currentView === "settings" ? (
         <div className="settings-view">
           <div className="settings-section">
+            <h2>Tracking</h2>
+            <p className="settings-description">
+              Configure how task tracking works.
+            </p>
+            <div className="tracking-toggle-container">
+              <div className="tracking-toggle-info">
+                <span className="tracking-toggle-label">Allow Multiple Tasks</span>
+                <span className="tracking-toggle-description">Track multiple tasks simultaneously</span>
+              </div>
+              <button
+                className={`ads-toggle ${trackingSettings.allowMultipleTasks ? "enabled" : ""}`}
+                onClick={() => {
+                  const newSettings = { ...trackingSettings, allowMultipleTasks: !trackingSettings.allowMultipleTasks };
+                  setTrackingSettings(newSettings);
+                  localStorage.setItem("trackingSettings", JSON.stringify(newSettings));
+                  posthog.capture(newSettings.allowMultipleTasks ? "multi_task_enabled" : "multi_task_disabled");
+                }}
+              >
+                <span className="toggle-track">
+                  <span className="toggle-thumb"></span>
+                </span>
+                <span className="toggle-label">{trackingSettings.allowMultipleTasks ? "Enabled" : "Disabled"}</span>
+              </button>
+            </div>
+          </div>
+          <div className="settings-section">
             <h2>Keyboard Shortcuts</h2>
             <p className="settings-description">
               Click on a shortcut to record a new key combination.
@@ -1139,8 +1245,8 @@ function App() {
                       try {
                         const newProjects = await invoke<Project[]>("reset_database");
                         setProjects(newProjects);
-                        setActiveTracking(null);
-                        setElapsedTime(0);
+                        setActiveTracking([]);
+                        setElapsedTimes({});
                         setCurrentView("main");
                       } catch (e) {
                         console.error("Reset database error:", e);
