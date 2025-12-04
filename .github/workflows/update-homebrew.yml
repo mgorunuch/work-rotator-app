@@ -18,14 +18,14 @@ jobs:
       - name: Download and hash ARM DMG
         id: arm_hash
         run: |
-          curl -L -o arm.dmg "https://github.com/mgorunuch/work-rotator-app/releases/download/${{ github.event.release.tag_name }}/rotator_${{ steps.release.outputs.version }}_aarch64.dmg"
+          curl -L -o arm.dmg "https://github.com/mgorunuch/work-rotator-app/releases/download/${{ github.event.release.tag_name }}/Rotator_${{ steps.release.outputs.version }}_aarch64.dmg"
           HASH=$(shasum -a 256 arm.dmg | cut -d ' ' -f 1)
           echo "sha256=$HASH" >> $GITHUB_OUTPUT
 
       - name: Download and hash Intel DMG
         id: intel_hash
         run: |
-          curl -L -o intel.dmg "https://github.com/mgorunuch/work-rotator-app/releases/download/${{ github.event.release.tag_name }}/rotator_${{ steps.release.outputs.version }}_x86_64.dmg"
+          curl -L -o intel.dmg "https://github.com/mgorunuch/work-rotator-app/releases/download/${{ github.event.release.tag_name }}/Rotator_${{ steps.release.outputs.version }}_x86_64.dmg"
           HASH=$(shasum -a 256 intel.dmg | cut -d ' ' -f 1)
           echo "sha256=$HASH" >> $GITHUB_OUTPUT
 
@@ -47,14 +47,14 @@ jobs:
             sha256 arm:   "${{ steps.arm_hash.outputs.sha256 }}",
                    intel: "${{ steps.intel_hash.outputs.sha256 }}"
 
-            url "https://github.com/mgorunuch/work-rotator-app/releases/download/v#{version}/rotator_#{version}_#{arch}.dmg"
+            url "https://github.com/mgorunuch/work-rotator-app/releases/download/v#{version}/Rotator_#{version}_#{arch}.dmg"
             name "Rotator"
             desc "Work rotation timer app"
             homepage "https://github.com/mgorunuch/work-rotator-app"
 
             depends_on macos: ">= :catalina"
 
-            app "rotator.app"
+            app "Rotator.app"
 
             zap trash: [
               "~/Library/Application Support/com.rotator.app",
